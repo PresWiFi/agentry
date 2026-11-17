@@ -1,7 +1,9 @@
+# Pull the published image:   docker compose pull && docker compose up -d
+# Or build from this checkout: docker compose up -d --build
 services:
   agentry:
+    image: ghcr.io/preswifi/agentry:latest
     build: .
-    image: agentry:latest
     container_name: agentry
     restart: unless-stopped
     env_file:

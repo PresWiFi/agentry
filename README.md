@@ -20,10 +20,17 @@ First agent: **ServiceDesk Plus Solutions**
 
 ## Run
 
+On any Docker host that can reach your GPU machine(s):
+
 ```bash
-docker compose up -d --build
-docker logs agentry | grep "setup code"
+# The image is private while the repo is: sign in once with a GitHub token that has read:packages
+echo <token> | docker login ghcr.io -u PresWiFi --password-stdin
+
+docker run -d --name agentry --restart unless-stopped -p 8090:8090 -v agentry-data:/data ghcr.io/preswifi/agentry:latest
+docker logs agentry 2>&1 | grep "setup code"
 ```
+
+Or with this repo checked out: `docker compose pull && docker compose up -d` (or `--build` to build locally).
 
 Open http://<host>:8090, enter the setup code, create the admin account. Then:
 1. **Settings** → public URL and SSO (optional).
@@ -89,6 +96,18 @@ On-premises: technician API key (profile → Generate API Key).
 ## HTTPS
 
 Put Agentry behind a reverse proxy (Caddy, Nginx Proxy Manager, Traefik). In Settings, set the public URL to the `https://` address and add the proxy's IP to trusted proxies. Cookies are marked Secure automatically on HTTPS requests.
+
+## Update and back up
+
+```bash
+docker pull ghcr.io/preswifi/agentry:latest && docker rm -f agentry && docker run -d ... (same command as above)
+# or: docker compose pull && docker compose up -d
+```
+
+Everything (database, generated encryption key) lives in the `agentry-data` volume. Back it up:
+`docker run --rm -v agentry-data:/data -v "$PWD":/backup alpine tar czf /backup/agentry-data.tgz -C /data .`
+
+Images: `:latest` follows main, `:X.Y.Z` for releases (tag `vX.Y.Z` matching `agentry/__init__.py`).
 
 ## Develop
 
