@@ -10,63 +10,78 @@ First agent: **ServiceDesk Plus Solutions**
 
 ## Features
 
-- Model servers: Ollama or any OpenAI-compatible server (vLLM, llama.cpp, LM Studio). Health, installed models, what's loaded in VRAM.
+- Model servers: Ollama or any OpenAI-compatible server. Health, installed models, what's loaded in VRAM.
 - Agents: schedule (every N minutes) or run by hand, live run log, stop button.
 - Proposals: side-by-side current vs proposed, edit before approving, reject. Updates are refused if the Solution changed in ServiceDesk Plus after the proposal was made.
-- Sign-in: OpenID Connect (Entra ID, Authentik, Keycloak, Google, …) with group → role mapping, plus an optional local admin.
+- Sign-in: OpenID Connect (Entra ID, Authentik, Keycloak, Google, …) with group → role mapping, and local accounts.
 - Roles: admin (everything), reviewer (approve/reject), viewer (read-only).
-- API keys encrypted at rest. Audit log of sign-ins, config changes, and approvals.
+- All configuration in the UI. Secrets encrypted at rest. Audit log.
 - Model output is stripped to formatting-only HTML before it's stored or sent to ServiceDesk Plus.
 
 ## Run
 
 ```bash
-cp .env.example .env    # set AGENTRY_ADMIN_PASSWORD and/or OIDC_*
 docker compose up -d --build
+docker logs agentry | grep "setup code"
 ```
 
-Open http://<host>:8090, then:
-1. **Model servers** → add the GPU server (e.g. `http://10.0.20.50:11434`, kind Ollama).
-2. **Connections** → add ServiceDesk Plus, **Test**.
-3. **Agents** → New agent → ServiceDesk Plus Solutions → Save → **Test setup** → **Run now**.
-4. **Proposals** → review.
+Open http://<host>:8090, enter the setup code, create the admin account. Then:
+1. **Settings** → public URL and SSO (optional).
+2. **Model servers** → add the GPU server (`http://<gpu-server>:11434`, kind Ollama).
+3. **Connections** → add ServiceDesk Plus, **Test**.
+4. **Agents** → New agent → ServiceDesk Plus Solutions → Save → **Test setup** → **Run now**.
+5. **Proposals** → review.
 
-Start in Review mode with a small `Solutions per run`. Turn on the schedule once the proposals look right.
+Start in Review mode with a small `Solutions per run`. Turn on the schedule once proposals look right.
 
-For what to run on the GPU server, see [docs/models.md](docs/models.md).
+No `.env` is needed. Optional variables are in [.env.example](.env.example).
+
+GPU server setup and model picks for the Tesla T4: [docs/models.md](docs/models.md).
 
 ## SSO
 
-Redirect URI to register at the provider: `<AGENTRY_PUBLIC_URL>/auth/oidc/callback`
+Settings → Single sign-on. The page shows the redirect URI to register (set the public URL first).
 
 **Entra ID**
-1. App registrations → New → Web, redirect URI as above.
-2. Certificates & secrets → new client secret.
-3. Token configuration → Add groups claim → Security groups (ID token). Entra sends group **object IDs**; put those in `OIDC_*_GROUPS`.
-4. `.env`: `OIDC_ISSUER=https://login.microsoftonline.com/<tenant-id>/v2.0`, client ID, secret.
+1. App registrations → New registration → Web → the redirect URI from Settings.
+2. Certificates & secrets → New client secret.
+3. Token configuration → Add groups claim → Security groups. Entra sends group **object IDs**; enter those under Admin/Reviewer/Viewer groups.
+4. Issuer: `https://login.microsoftonline.com/<tenant-id>/v2.0`. Enter client ID and secret, **Test issuer**, Save, **Try signing in**.
 
-**Authentik**: OAuth2/OpenID provider + application. Issuer is `https://<authentik>/application/o/<slug>/`. Groups come in the `groups` claim by default.
+**Authentik**: OAuth2/OpenID provider + application. Issuer `https://<authentik>/application/o/<slug>/`. Groups come in the `groups` claim.
 
-Role from groups is set at every sign-in. Without group mapping, new SSO users get `OIDC_DEFAULT_ROLE` and an admin changes roles on the Users page; the first SSO user on an install with no admin becomes admin.
+Roles from groups are set at every sign-in. With no groups listed, new SSO users get the default role and an admin sets roles on the Users page.
 
-Once SSO works, set `AGENTRY_LOCAL_LOGIN=false`.
+Once an SSO admin has signed in, password sign-in can be turned off in Settings. If SSO breaks after that:
 
-## ServiceDesk Plus
+```bash
+docker exec -it agentry python -m agentry local-login on && docker restart agentry
+```
 
-- **On-premises**: technician API key (profile → Generate API Key). The agent acts as that technician: it needs to view requests and add/edit Solutions. A dedicated technician account (e.g. "KB Agent") keeps the history clear.
-- **Cloud**: Zoho OAuth self client with scopes `SDPOnDemand.solutions.ALL,SDPOnDemand.requests.READ`; enter client ID, secret, refresh token, and the accounts URL for your data center.
+Other recovery commands: `python -m agentry reset-password <user>`, `python -m agentry add-admin <user>`.
 
-Uses REST API v3: `GET/PUT/POST /api/v3/solutions`, `GET /api/v3/requests`.
+## ServiceDesk Plus Cloud
+
+Connections → Add → Edition **Cloud (Zoho)**:
+1. URL: any page URL from your portal (e.g. `https://sdpondemand.manageengine.com/app/itdesk/ui/requests`).
+2. Data center: matches your Zoho region (sets the accounts URL).
+3. In the Zoho API Console for that region, signed in as the technician the agent should act as (needs: view requests, add/edit Solutions): Add Client → **Self Client**. Copy client ID and secret into Agentry.
+4. Self Client → Generate Code → scope `SDPOnDemand.solutions.ALL,SDPOnDemand.requests.READ`, 10 minutes. Paste it as the **Grant code** and Save. Agentry exchanges it for a refresh token and stores it encrypted.
+5. **Test**.
+
+A dedicated technician account (e.g. "KB Agent") keeps the Solution history clear. Agentry shares access tokens across runs and backs off on HTTP 429 to stay inside Zoho's limits.
+
+On-premises: technician API key (profile → Generate API Key).
 
 ## HTTPS
 
-Put it behind a reverse proxy (Caddy, Nginx Proxy Manager, Traefik) and set `AGENTRY_PUBLIC_URL=https://…`, `AGENTRY_SECURE_COOKIES=true`, and `AGENTRY_TRUSTED_PROXIES` to the proxy's IP.
+Put Agentry behind a reverse proxy (Caddy, Nginx Proxy Manager, Traefik). In Settings, set the public URL to the `https://` address and add the proxy's IP to trusted proxies. Cookies are marked Secure automatically on HTTPS requests.
 
 ## Develop
 
 ```bash
 python3.12 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-AGENTRY_ADMIN_PASSWORD=dev AGENTRY_DATA=./data .venv/bin/python -m agentry   # http://localhost:8090
+AGENTRY_ADMIN_PASSWORD=dev-password AGENTRY_DATA=./data .venv/bin/python -m agentry   # http://localhost:8090
 .venv/bin/python -m pytest -q
 ```
 
@@ -78,4 +93,4 @@ Subclass `AgentType` in `agentry/agents/`, declare `fields` (the settings form i
 
 ## Status
 
-v0.1.0. Not yet tested against a real ServiceDesk Plus instance or a real GPU model; field names for request resolutions and solution timestamps may need adjusting per SDP build.
+v0.2.0. Not yet tested against a real ServiceDesk Plus instance, the T4, or a real identity provider. SDP field names for request resolutions and Solution timestamps may need adjusting.

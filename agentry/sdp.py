@@ -8,12 +8,20 @@ v3 takes parameters as a JSON `input_data` value: in the query string for GET, f
 """
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import time
+from urllib.parse import urlsplit
 
 import httpx
 
 ACCEPT = "application/vnd.manageengine.sdp.v3+json"
+CLOUD_SCOPES = "SDPOnDemand.solutions.ALL,SDPOnDemand.requests.READ"
+
+# Zoho caps how many access tokens one refresh token may mint per 10 minutes, so share them
+# across clients: key = hash of (accounts URL, client ID, refresh token) -> (token, expiry).
+_tokens: dict[str, tuple[str, float]] = {}
 
 
 class SDPError(Exception):
@@ -37,8 +45,8 @@ class SDP:
         self.verify_tls = config.get("verify_tls", True)
         self.secret = secret
         self.accounts_url = config.get("accounts_url") or "https://accounts.zoho.com"
-        self._token: str | None = None
-        self._token_exp = 0.0
+        self._token_key = hashlib.sha256("|".join([self.accounts_url, secret.get("client_id", ""),
+                                                   secret.get("refresh_token", "")]).encode()).hexdigest()
         self.http = httpx.AsyncClient(timeout=httpx.Timeout(60, connect=10), verify=self.verify_tls,
                                       transport=transport)
 
@@ -48,7 +56,8 @@ class SDP:
     async def _auth_headers(self) -> dict:
         if self.edition == "onprem":
             return {"authtoken": self.secret.get("api_key", "")}
-        if not self._token or time.time() > self._token_exp - 60:
+        token, exp = _tokens.get(self._token_key, ("", 0.0))
+        if not token or time.time() > exp - 120:
             try:
                 r = await self.http.post(self.accounts_url.rstrip("/") + "/oauth/v2/token", data={
                     "grant_type": "refresh_token", "refresh_token": self.secret.get("refresh_token", ""),
@@ -57,10 +66,11 @@ class SDP:
             except (httpx.HTTPError, ValueError) as e:
                 raise SDPError(f"Couldn't refresh the Zoho token: {e}")
             if "access_token" not in data:
-                raise SDPError(f"Zoho token refresh failed: {data.get('error', data)}")
-            self._token = data["access_token"]
-            self._token_exp = time.time() + int(data.get("expires_in", 3600))
-        return {"Authorization": f"Zoho-oauthtoken {self._token}"}
+                raise SDPError(f"Zoho token refresh failed: {data.get('error', data)}. Check the client ID/secret, "
+                               "the accounts URL (data center), and that the refresh token wasn't revoked.")
+            token, exp = data["access_token"], time.time() + int(data.get("expires_in", 3600))
+            _tokens[self._token_key] = (token, exp)
+        return {"Authorization": f"Zoho-oauthtoken {token}"}
 
     async def _call(self, method: str, path: str, input_data: dict | None = None) -> dict:
         headers = {"Accept": ACCEPT, **(await self._auth_headers())}
@@ -71,10 +81,15 @@ class SDP:
                 kw["params"] = {"input_data": json.dumps(input_data)}
             else:
                 kw["data"] = {"input_data": json.dumps(input_data)}
-        try:
-            r = await self.http.request(method, url, headers=headers, **kw)
-        except httpx.HTTPError as e:
-            raise SDPError(f"Can't reach ServiceDesk Plus at {self.base}: {e.__class__.__name__}: {e}")
+        for attempt in range(4):
+            try:
+                r = await self.http.request(method, url, headers=headers, **kw)
+            except httpx.HTTPError as e:
+                raise SDPError(f"Can't reach ServiceDesk Plus at {self.base}: {e.__class__.__name__}: {e}")
+            if r.status_code != 429 or attempt == 3:
+                break
+            # Rate limited (Cloud has per-minute API limits): back off and retry.
+            await asyncio.sleep(min(60, float(r.headers.get("retry-after") or 5 * 2 ** attempt)))
         try:
             data = r.json()
         except ValueError:
@@ -158,6 +173,35 @@ class SDP:
         data = await self._call("GET", "requests", {"list_info": {"row_count": 1, "start_index": 1}})
         out["requests_readable"] = True
         return out
+
+
+async def exchange_grant(accounts_url: str, client_id: str, client_secret: str, code: str,
+                         transport: httpx.AsyncBaseTransport | None = None) -> str:
+    """Trades a one-time grant code from a Zoho Self Client for a long-lived refresh token."""
+    url = (accounts_url or "https://accounts.zoho.com").rstrip("/") + "/oauth/v2/token"
+    try:
+        async with httpx.AsyncClient(timeout=20, transport=transport) as c:
+            r = await c.post(url, data={"grant_type": "authorization_code", "code": code.strip(),
+                                        "client_id": client_id, "client_secret": client_secret})
+        data = r.json()
+    except (httpx.HTTPError, ValueError) as e:
+        raise SDPError(f"Couldn't reach {url}: {e}")
+    if not data.get("refresh_token"):
+        err = data.get("error", data)
+        hint = " Grant codes expire after a few minutes and work once; generate a new one." \
+            if err == "invalid_code" else ""
+        raise SDPError(f"Zoho didn't return a refresh token: {err}.{hint}")
+    return data["refresh_token"]
+
+
+def cloud_base(url: str) -> str:
+    """https://sdpondemand.manageengine.com/app/itdesk/ui/requests -> https://sdpondemand.manageengine.com/app/itdesk"""
+    u = urlsplit(url.strip())
+    parts = [p for p in u.path.split("/") if p]
+    if "app" in parts and parts.index("app") + 1 < len(parts):
+        i = parts.index("app")
+        return f"{u.scheme}://{u.netloc}/app/{parts[i + 1]}"
+    return url.strip().rstrip("/")
 
 
 def updated_ms(sol: dict) -> int | None:

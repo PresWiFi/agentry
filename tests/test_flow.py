@@ -89,6 +89,7 @@ def test_full_flow(env):
     assert "reviewed 2, 1 updates proposed" in run["summary"]
     assert "1 gaps, 1 drafts proposed" in run["summary"]
     assert oll.chats[0]["options"]["num_ctx"] == 16384 and oll.chats[0]["format"] == "json"
+    assert "think" not in oll.chats[0]  # model default unless set
 
     props = c.get("/api/proposals").json()
     assert len(props) == 2

@@ -58,3 +58,7 @@ legend { padding:0 6px; color:var(--muted); font-weight:600; }
 .formgrid { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:0 16px; }
 .card { overflow-x:auto; }
 @media (max-width:900px) { main { padding:16px 12px; } nav .me { border-top:none; padding:4px 10px; } }
+nav .me a.link-plain { padding:0; color:var(--accent); } nav .me a.link-plain:hover { background:none; text-decoration:underline; }
+.copy { display:flex; gap:8px; align-items:center; } .copy code { flex:1; padding:7px 10px; border:1px solid var(--line); border-radius:6px; background:var(--bg); overflow-x:auto; white-space:nowrap; }
+code { font-family:ui-monospace, Consolas, monospace; font-size:12.5px; }
+.note { border-left:3px solid var(--warn); padding:6px 12px; margin:0 0 12px; background:color-mix(in srgb, var(--warn) 8%, transparent); }

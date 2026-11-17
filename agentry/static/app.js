@@ -61,17 +61,118 @@ async function boot() {
   const m = await api("/api/me");
   const err = new URLSearchParams(location.search).get("error");
   if (err) { history.replaceState(null, "", "/" + location.hash); }
+  if (m.setup) return showSetup();
   if (!m.user) return showLogin(m.login, err);
   ME = m.user;
   $("#login").classList.add("hidden");
+  $("#setup").classList.add("hidden");
   $("#shell").classList.remove("hidden");
   $("#me-name").textContent = ME.name || ME.email || ME.username;
   $("#me-role").textContent = ME.role + (ME.local ? " · local" : "");
   document.querySelectorAll("[data-role]").forEach(a => a.classList.toggle("hidden", !can(a.dataset.role)));
   route();
 }
+function showSetup() {
+  $("#shell").classList.add("hidden");
+  $("#login").classList.add("hidden");
+  $("#setup").classList.remove("hidden");
+}
+$("#setup-form").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  try {
+    await api("/api/setup", { method: "POST", body: formData(ev.target) });
+    location.hash = "#/settings";
+    // ---------- settings & account ----------
+async function settingsPage() {
+  const s = await api("/api/settings");
+  const list = a => esc((a || []).join(", "));
+  view.innerHTML = `
+    <div class="head"><h1>Settings</h1></div>
+    <form id="gform" class="card"><h2>Address</h2><div class="formgrid">
+      <label>Public URL <input name="public_url" value="${esc(s.public_url)}" placeholder="${esc(location.origin)}"><small>The address people use, e.g. https://agentry.example.com. Used for the SSO redirect URI. Empty = whatever address the browser used.</small></label>
+      <label>Trusted reverse proxies <input name="trusted_proxies" value="${esc(s.trusted_proxies)}"><small>Comma-separated IPs or CIDRs whose X-Forwarded-For/Proto headers are trusted. Cookies are marked Secure automatically on HTTPS.</small></label>
+    </div><button class="btn primary">Save</button></form>
+
+    <form id="oform" class="card"><h2>Single sign-on (OpenID Connect)</h2>
+      <label>Redirect URI to register at your identity provider <div class="copy"><code id="ruri">${esc(s.redirect_uri)}</code><button type="button" class="btn" id="copy-ruri">Copy</button></div>
+        <small>Changes with the public URL above (save it first).</small></label>
+      <div class="formgrid">
+        <label style="grid-column:span 2">Issuer <input name="oidc_issuer" value="${esc(s.oidc_issuer)}" placeholder="https://login.microsoftonline.com/<tenant-id>/v2.0">
+          <small>Entra ID: https://login.microsoftonline.com/&lt;tenant-id&gt;/v2.0 · Authentik: https://auth.example.com/application/o/agentry/ · Keycloak: https://kc.example.com/realms/&lt;realm&gt; · Google: https://accounts.google.com</small></label>
+        <label>Client ID <input name="oidc_client_id" value="${esc(s.oidc_client_id)}" autocomplete="off"></label>
+        <label>Client secret <input name="oidc_client_secret" type="password" autocomplete="off" placeholder="${s.oidc_client_secret_set ? "set (leave blank to keep)" : ""}">
+          ${s.oidc_client_secret_set ? `<label class="check" style="margin-top:6px"><input type="checkbox" name="clear_oidc_client_secret"> Remove the stored secret</label>` : ""}</label>
+        <label>Button label <input name="oidc_label" value="${esc(s.oidc_label)}"></label>
+        <label>Scopes <input name="oidc_scopes" value="${esc(s.oidc_scopes)}"></label>
+      </div>
+      <h3>Roles</h3>
+      <p class="muted">Group names or IDs from the groups claim (Entra sends group object IDs). First match wins: admin, reviewer, viewer. With no groups listed, new SSO users get the default role and you set roles on the Users page.</p>
+      <div class="formgrid">
+        <label>Groups claim <input name="oidc_groups_claim" value="${esc(s.oidc_groups_claim)}"></label>
+        <label>Admin groups <input name="oidc_admin_groups" value="${list(s.oidc_admin_groups)}"><small>Comma-separated.</small></label>
+        <label>Reviewer groups <input name="oidc_reviewer_groups" value="${list(s.oidc_reviewer_groups)}"></label>
+        <label>Viewer groups <input name="oidc_viewer_groups" value="${list(s.oidc_viewer_groups)}"></label>
+        <label>Default role <select name="oidc_default_role">${["none", "viewer", "reviewer", "admin"].map(r => `<option ${r === s.oidc_default_role ? "selected" : ""}>${r}</option>`).join("")}</select><small>For users matching no group. "none" = no access.</small></label>
+        <label>Allowed email domains <input name="oidc_allowed_domains" value="${list(s.oidc_allowed_domains)}" placeholder="optional"><small>Comma-separated. Empty = any.</small></label>
+      </div>
+      <div class="row"><button class="btn primary">Save</button><button type="button" class="btn" id="test-oidc">Test issuer</button>
+        ${s.oidc_issuer && s.oidc_client_id ? `<a class="btn" href="/auth/oidc/login">Try signing in</a>` : ""}<span id="oidc-out" class="muted"></span></div>
+    </form>
+
+    <form id="lform" class="card"><h2>Password sign-in</h2>
+      <label class="check"><input type="checkbox" name="local_login" ${s.local_login ? "checked" : ""}> Allow local accounts to sign in with a password</label>
+      ${s.sso_admins ? "" : `<p class="note">To turn this off, first sign in once with SSO using an account that gets the admin role.</p>`}
+      <p class="muted">If SSO breaks while this is off: <code>docker exec -it agentry python -m agentry local-login on</code>, then restart the container.</p>
+      <button class="btn primary">Save</button></form>
+
+    <div class="card"><h2>Server</h2><dl class="kv">
+      <dt>Encryption key</dt><dd>${s.secret_source === "env" ? "From AGENTRY_SECRET_KEY" : `Generated, stored in ${esc(s.data_dir)}/secret.key`} <small class="muted">· back up the data volume; without the key, stored secrets can't be read.</small></dd>
+      <dt>Version</dt><dd id="ver"></dd></dl></div>`;
+  api("/api/me").then(m => $("#ver").textContent = m.version);
+  const save = (form, pick) => async ev => {
+    ev.preventDefault();
+    await act(() => api("/api/settings", { method: "PUT", body: pick(formData(form)) }), "Saved");
+    settingsPage();
+  };
+  $("#gform").onsubmit = save($("#gform"), d => d);
+  $("#oform").onsubmit = save($("#oform"), d => d);
+  $("#lform").onsubmit = save($("#lform"), d => d);
+  $("#copy-ruri").onclick = () => {
+    const t = $("#ruri").textContent;
+    (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(() => toast("Copied"), () => {
+      const r = document.createRange(); r.selectNodeContents($("#ruri")); getSelection().removeAllRanges(); getSelection().addRange(r);
+      toast("Selected; press Ctrl+C");
+    });
+  };
+  $("#test-oidc").onclick = async () => {
+    const out = $("#oidc-out");
+    out.textContent = "Checking…";
+    const r = await api("/api/settings/test-oidc", { method: "POST", body: { issuer: $("#oform").oidc_issuer.value } }).catch(e => ({ ok: false, error: e.message }));
+    out.innerHTML = r.ok ? `${pill("ok")} Found ${esc(r.issuer)}${r.claims_supported && !r.claims_supported.includes($("#oform").oidc_groups_claim.value) ? ` · note: “${esc($("#oform").oidc_groups_claim.value)}” isn't in the provider's advertised claims (may still be sent)` : ""}`
+      : `${pill("error")} ${esc(r.error)}`;
+  };
+}
+async function account() {
+  view.innerHTML = `<div class="head"><h1>Account</h1></div>
+    <div class="card"><dl class="kv"><dt>Name</dt><dd>${esc(ME.name || "")}</dd><dt>Email</dt><dd>${esc(ME.email || "—")}</dd>
+      <dt>Role</dt><dd>${esc(ME.role)}</dd><dt>Sign-in</dt><dd>${ME.local ? "Local password" : "SSO"}</dd></dl></div>
+    ${ME.local ? `<form id="pwform" class="card"><h2>Change password</h2><div class="formgrid">
+      <label>Current password <input name="current" type="password" required autocomplete="current-password"></label>
+      <label>New password <input name="new" type="password" required minlength="10" autocomplete="new-password"><small>At least 10 characters. Signs out your other sessions.</small></label>
+    </div><button class="btn primary">Change</button></form>` : ""}`;
+  $("#pwform")?.addEventListener("submit", async ev => {
+    ev.preventDefault();
+    await act(() => api("/api/me/password", { method: "POST", body: formData(ev.target) }), "Password changed");
+    ev.target.reset();
+  });
+}
+
+boot();
+  } catch (e) { const el = $("#setup-error"); el.textContent = e.message; el.classList.remove("hidden"); }
+});
 async function showLogin(login, err) {
   if (!login) login = (await api("/api/me")).login;
+  $("#setup").classList.add("hidden");
   $("#shell").classList.add("hidden");
   $("#login").classList.remove("hidden");
   $("#sso-btn").classList.toggle("hidden", !login.oidc);
@@ -86,7 +187,92 @@ $("#login-form").addEventListener("submit", async ev => {
   ev.preventDefault();
   try {
     await api("/api/login", { method: "POST", body: formData(ev.target) });
-    boot();
+    // ---------- settings & account ----------
+async function settingsPage() {
+  const s = await api("/api/settings");
+  const list = a => esc((a || []).join(", "));
+  view.innerHTML = `
+    <div class="head"><h1>Settings</h1></div>
+    <form id="gform" class="card"><h2>Address</h2><div class="formgrid">
+      <label>Public URL <input name="public_url" value="${esc(s.public_url)}" placeholder="${esc(location.origin)}"><small>The address people use, e.g. https://agentry.example.com. Used for the SSO redirect URI. Empty = whatever address the browser used.</small></label>
+      <label>Trusted reverse proxies <input name="trusted_proxies" value="${esc(s.trusted_proxies)}"><small>Comma-separated IPs or CIDRs whose X-Forwarded-For/Proto headers are trusted. Cookies are marked Secure automatically on HTTPS.</small></label>
+    </div><button class="btn primary">Save</button></form>
+
+    <form id="oform" class="card"><h2>Single sign-on (OpenID Connect)</h2>
+      <label>Redirect URI to register at your identity provider <div class="copy"><code id="ruri">${esc(s.redirect_uri)}</code><button type="button" class="btn" id="copy-ruri">Copy</button></div>
+        <small>Changes with the public URL above (save it first).</small></label>
+      <div class="formgrid">
+        <label style="grid-column:span 2">Issuer <input name="oidc_issuer" value="${esc(s.oidc_issuer)}" placeholder="https://login.microsoftonline.com/<tenant-id>/v2.0">
+          <small>Entra ID: https://login.microsoftonline.com/&lt;tenant-id&gt;/v2.0 · Authentik: https://auth.example.com/application/o/agentry/ · Keycloak: https://kc.example.com/realms/&lt;realm&gt; · Google: https://accounts.google.com</small></label>
+        <label>Client ID <input name="oidc_client_id" value="${esc(s.oidc_client_id)}" autocomplete="off"></label>
+        <label>Client secret <input name="oidc_client_secret" type="password" autocomplete="off" placeholder="${s.oidc_client_secret_set ? "set (leave blank to keep)" : ""}">
+          ${s.oidc_client_secret_set ? `<label class="check" style="margin-top:6px"><input type="checkbox" name="clear_oidc_client_secret"> Remove the stored secret</label>` : ""}</label>
+        <label>Button label <input name="oidc_label" value="${esc(s.oidc_label)}"></label>
+        <label>Scopes <input name="oidc_scopes" value="${esc(s.oidc_scopes)}"></label>
+      </div>
+      <h3>Roles</h3>
+      <p class="muted">Group names or IDs from the groups claim (Entra sends group object IDs). First match wins: admin, reviewer, viewer. With no groups listed, new SSO users get the default role and you set roles on the Users page.</p>
+      <div class="formgrid">
+        <label>Groups claim <input name="oidc_groups_claim" value="${esc(s.oidc_groups_claim)}"></label>
+        <label>Admin groups <input name="oidc_admin_groups" value="${list(s.oidc_admin_groups)}"><small>Comma-separated.</small></label>
+        <label>Reviewer groups <input name="oidc_reviewer_groups" value="${list(s.oidc_reviewer_groups)}"></label>
+        <label>Viewer groups <input name="oidc_viewer_groups" value="${list(s.oidc_viewer_groups)}"></label>
+        <label>Default role <select name="oidc_default_role">${["none", "viewer", "reviewer", "admin"].map(r => `<option ${r === s.oidc_default_role ? "selected" : ""}>${r}</option>`).join("")}</select><small>For users matching no group. "none" = no access.</small></label>
+        <label>Allowed email domains <input name="oidc_allowed_domains" value="${list(s.oidc_allowed_domains)}" placeholder="optional"><small>Comma-separated. Empty = any.</small></label>
+      </div>
+      <div class="row"><button class="btn primary">Save</button><button type="button" class="btn" id="test-oidc">Test issuer</button>
+        ${s.oidc_issuer && s.oidc_client_id ? `<a class="btn" href="/auth/oidc/login">Try signing in</a>` : ""}<span id="oidc-out" class="muted"></span></div>
+    </form>
+
+    <form id="lform" class="card"><h2>Password sign-in</h2>
+      <label class="check"><input type="checkbox" name="local_login" ${s.local_login ? "checked" : ""}> Allow local accounts to sign in with a password</label>
+      ${s.sso_admins ? "" : `<p class="note">To turn this off, first sign in once with SSO using an account that gets the admin role.</p>`}
+      <p class="muted">If SSO breaks while this is off: <code>docker exec -it agentry python -m agentry local-login on</code>, then restart the container.</p>
+      <button class="btn primary">Save</button></form>
+
+    <div class="card"><h2>Server</h2><dl class="kv">
+      <dt>Encryption key</dt><dd>${s.secret_source === "env" ? "From AGENTRY_SECRET_KEY" : `Generated, stored in ${esc(s.data_dir)}/secret.key`} <small class="muted">· back up the data volume; without the key, stored secrets can't be read.</small></dd>
+      <dt>Version</dt><dd id="ver"></dd></dl></div>`;
+  api("/api/me").then(m => $("#ver").textContent = m.version);
+  const save = (form, pick) => async ev => {
+    ev.preventDefault();
+    await act(() => api("/api/settings", { method: "PUT", body: pick(formData(form)) }), "Saved");
+    settingsPage();
+  };
+  $("#gform").onsubmit = save($("#gform"), d => d);
+  $("#oform").onsubmit = save($("#oform"), d => d);
+  $("#lform").onsubmit = save($("#lform"), d => d);
+  $("#copy-ruri").onclick = () => {
+    const t = $("#ruri").textContent;
+    (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(() => toast("Copied"), () => {
+      const r = document.createRange(); r.selectNodeContents($("#ruri")); getSelection().removeAllRanges(); getSelection().addRange(r);
+      toast("Selected; press Ctrl+C");
+    });
+  };
+  $("#test-oidc").onclick = async () => {
+    const out = $("#oidc-out");
+    out.textContent = "Checking…";
+    const r = await api("/api/settings/test-oidc", { method: "POST", body: { issuer: $("#oform").oidc_issuer.value } }).catch(e => ({ ok: false, error: e.message }));
+    out.innerHTML = r.ok ? `${pill("ok")} Found ${esc(r.issuer)}${r.claims_supported && !r.claims_supported.includes($("#oform").oidc_groups_claim.value) ? ` · note: “${esc($("#oform").oidc_groups_claim.value)}” isn't in the provider's advertised claims (may still be sent)` : ""}`
+      : `${pill("error")} ${esc(r.error)}`;
+  };
+}
+async function account() {
+  view.innerHTML = `<div class="head"><h1>Account</h1></div>
+    <div class="card"><dl class="kv"><dt>Name</dt><dd>${esc(ME.name || "")}</dd><dt>Email</dt><dd>${esc(ME.email || "—")}</dd>
+      <dt>Role</dt><dd>${esc(ME.role)}</dd><dt>Sign-in</dt><dd>${ME.local ? "Local password" : "SSO"}</dd></dl></div>
+    ${ME.local ? `<form id="pwform" class="card"><h2>Change password</h2><div class="formgrid">
+      <label>Current password <input name="current" type="password" required autocomplete="current-password"></label>
+      <label>New password <input name="new" type="password" required minlength="10" autocomplete="new-password"><small>At least 10 characters. Signs out your other sessions.</small></label>
+    </div><button class="btn primary">Change</button></form>` : ""}`;
+  $("#pwform")?.addEventListener("submit", async ev => {
+    ev.preventDefault();
+    await act(() => api("/api/me/password", { method: "POST", body: formData(ev.target) }), "Password changed");
+    ev.target.reset();
+  });
+}
+
+boot();
   } catch (e) { const el = $("#login-error"); el.textContent = e.message; el.classList.remove("hidden"); }
 });
 $("#logout").onclick = async () => { await api("/api/logout", { method: "POST" }); location.hash = "#/"; showLogin(); };
@@ -106,6 +292,8 @@ const routes = [
   [/^#\/connections$/, connections],
   [/^#\/users$/, users],
   [/^#\/audit$/, audit],
+  [/^#\/settings$/, settingsPage],
+  [/^#\/account$/, account],
 ];
 async function route() {
   clearInterval(poll); poll = null;
@@ -445,6 +633,10 @@ async function servers() {
 }
 
 // ---------- connections ----------
+const ZOHO_DC = [["us", "United States (.com)", "https://accounts.zoho.com"], ["eu", "Europe (.eu)", "https://accounts.zoho.eu"],
+  ["in", "India (.in)", "https://accounts.zoho.in"], ["au", "Australia (.com.au)", "https://accounts.zoho.com.au"],
+  ["jp", "Japan (.jp)", "https://accounts.zoho.jp"], ["ca", "Canada (zohocloud.ca)", "https://accounts.zohocloud.ca"],
+  ["cn", "China (.com.cn)", "https://accounts.zoho.com.cn"]];
 async function connections() {
   const list = await api("/api/connections");
   view.innerHTML = `
@@ -461,25 +653,34 @@ async function connections() {
     form.innerHTML = `<h2>${c ? "Edit " + esc(c.name) : "Add ServiceDesk Plus"}</h2><div class="formgrid">
       <label>Name <input name="name" required value="${esc(c?.name || "ServiceDesk Plus")}"></label>
       <label>Edition <select name="edition"><option value="onprem" ${cfg.edition === "onprem" ? "selected" : ""}>On-premises</option><option value="cloud" ${cfg.edition === "cloud" ? "selected" : ""}>Cloud (Zoho)</option></select></label>
-      <label>URL <input name="base_url" required value="${esc(cfg.base_url || "")}" placeholder="https://servicedesk.example.com"><small>Cloud: https://sdpondemand.manageengine.com/app/&lt;portal&gt; (or your data center's domain).</small></label>
+      <label>URL <input name="base_url" required value="${esc(cfg.base_url || "")}" placeholder="https://servicedesk.example.com"><small class="ed-cloud-help">Cloud: paste any page URL from your portal, e.g. https://sdpondemand.manageengine.com/app/itdesk/ui/requests. Agentry keeps the part up to the portal name.</small></label>
       <label class="check" style="align-self:center"><input type="checkbox" name="verify_tls" ${cfg.verify_tls !== false ? "checked" : ""}> Verify TLS certificate</label>
     </div>
     <fieldset class="ed-onprem"><legend>On-premises</legend><label>Technician API key <input name="api_key" type="password" placeholder="${c?.secrets_set.includes("api_key") ? "set (leave blank to keep)" : ""}"><small>Generate under the technician's profile → Generate API Key. The agent acts with this technician's permissions: give it SDAdmin or a role that can add/edit solutions and view requests.</small></label></fieldset>
-    <fieldset class="ed-cloud"><legend>Cloud (Zoho OAuth)</legend><div class="formgrid">
-      <label>Accounts URL <input name="accounts_url" value="${esc(cfg.accounts_url || "")}" placeholder="https://accounts.zoho.com"><small>.eu, .in, .com.au… to match your data center.</small></label>
-      <label>Client ID <input name="client_id" placeholder="${c?.secrets_set.includes("client_id") ? "set" : ""}"></label>
-      <label>Client secret <input name="client_secret" type="password" placeholder="${c?.secrets_set.includes("client_secret") ? "set" : ""}"></label>
-      <label>Refresh token <input name="refresh_token" type="password" placeholder="${c?.secrets_set.includes("refresh_token") ? "set" : ""}"><small>Scopes: SDPOnDemand.solutions.ALL, SDPOnDemand.requests.READ</small></label>
+    <fieldset class="ed-cloud"><legend>Cloud (Zoho OAuth)</legend>
+      <ol class="muted" style="margin-top:0;padding-left:18px">
+        <li>Sign in to the Zoho API Console for your data center (e.g. api-console.zoho.com) as a technician who can edit Solutions and view requests.</li>
+        <li>Add Client → <b>Self Client</b> → Create. Copy the client ID and secret below.</li>
+        <li>Generate Code tab → scope <code>SDPOnDemand.solutions.ALL,SDPOnDemand.requests.READ</code>, duration 10 minutes → Create. Paste the code below and Save within the time limit.</li>
+      </ol>
+      <div class="formgrid">
+      <label>Data center <select name="dc">${ZOHO_DC.map(([k, l, u]) => `<option value="${k}" ${(cfg.accounts_url || "https://accounts.zoho.com") === u ? "selected" : ""}>${l}</option>`).join("")}<option value="custom" ${cfg.accounts_url && !ZOHO_DC.some(d => d[2] === cfg.accounts_url) ? "selected" : ""}>Other</option></select></label>
+      <label>Accounts URL <input name="accounts_url" value="${esc(cfg.accounts_url || "https://accounts.zoho.com")}"></label>
+      <label>Client ID <input name="client_id" autocomplete="off" placeholder="${c?.secrets_set.includes("client_id") ? "set (leave blank to keep)" : ""}"></label>
+      <label>Client secret <input name="client_secret" type="password" autocomplete="off" placeholder="${c?.secrets_set.includes("client_secret") ? "set (leave blank to keep)" : ""}"></label>
+      <label>Grant code <input name="grant_code" autocomplete="off" placeholder="1000.xxxx…"><small>${c?.secrets_set.includes("refresh_token") ? "Access is set up. Paste a new code only to replace it." : "One-time code from step 3. Agentry trades it for a refresh token."}</small></label>
+      <label>…or refresh token <input name="refresh_token" type="password" autocomplete="off"><small>If you already have one.</small></label>
     </div></fieldset>
     <div class="row"><button class="btn primary">Save</button>${c ? `<button type="button" class="btn" id="cnew">Cancel</button>` : ""}</div>`;
-    const ed = () => { const v = form.edition.value; form.querySelector(".ed-onprem").classList.toggle("hidden", v !== "onprem"); form.querySelector(".ed-cloud").classList.toggle("hidden", v !== "cloud"); };
+    const ed = () => { const v = form.edition.value; form.querySelector(".ed-onprem").classList.toggle("hidden", v !== "onprem"); form.querySelector(".ed-cloud").classList.toggle("hidden", v !== "cloud"); form.querySelector(".ed-cloud-help").classList.toggle("hidden", v !== "cloud"); };
     form.edition.onchange = ed; ed();
+    form.dc.onchange = () => { const d = ZOHO_DC.find(x => x[0] === form.dc.value); if (d) form.accounts_url.value = d[2]; };
     $("#cnew")?.addEventListener("click", () => fill(null));
     form.onsubmit = async ev => {
       ev.preventDefault();
       const d = formData(form);
       const body = { name: d.name, kind: "sdp", config: { edition: d.edition, base_url: d.base_url, verify_tls: d.verify_tls, accounts_url: d.accounts_url },
-        secret: { api_key: d.api_key, client_id: d.client_id, client_secret: d.client_secret, refresh_token: d.refresh_token } };
+        secret: { api_key: d.api_key, client_id: d.client_id, client_secret: d.client_secret, refresh_token: d.refresh_token, grant_code: d.grant_code } };
       await act(() => c ? api(`/api/connections/${c.id}`, { method: "PUT", body }) : api("/api/connections", { method: "POST", body }), "Saved");
       connections();
     };
@@ -508,7 +709,24 @@ async function users() {
     <div class="card"><table><tr><th>Name</th><th>Email</th><th>Sign-in</th><th>Role</th><th>Last sign-in</th><th></th></tr>
     ${users.map(u => `<tr><td>${esc(u.name || u.username)}</td><td>${esc(u.email || "")}</td><td>${u.local ? "local" : "SSO"}</td>
       <td><select data-role="${u.id}" style="width:auto">${["admin", "reviewer", "viewer", "none"].map(r => `<option ${r === u.role ? "selected" : ""}>${r}</option>`).join("")}</select></td>
-      <td>${when(u.last_login)}</td><td>${u.id !== ME.id ? `<button class="btn danger" data-del="${u.id}">Delete</button>` : ""}</td></tr>`).join("")}</table></div>`;
+      <td>${when(u.last_login)}</td><td class="row">${u.local ? `<button class="btn" data-pw="${u.id}" data-name="${esc(u.username)}">Set password</button>` : ""}${u.id !== ME.id ? `<button class="btn danger" data-del="${u.id}">Delete</button>` : ""}</td></tr>`).join("")}</table></div>
+    <form id="uform" class="card"><h2>Add a local account</h2>
+      <p class="muted">For service desk staff without SSO, or a break-glass admin. SSO users appear here after their first sign-in.</p>
+      <div class="formgrid">
+        <label>Username <input name="username" required autocomplete="off"></label>
+        <label>Display name <input name="name"></label>
+        <label>Password <input name="password" type="password" required minlength="10" autocomplete="new-password"><small>At least 10 characters.</small></label>
+        <label>Role <select name="role"><option>reviewer</option><option>viewer</option><option>admin</option></select></label>
+      </div><button class="btn primary">Add</button></form>`;
+  $("#uform").onsubmit = async ev => {
+    ev.preventDefault();
+    await act(() => api("/api/users", { method: "POST", body: formData(ev.target) }), "Added"); users();
+  };
+  view.querySelectorAll("[data-pw]").forEach(b => b.onclick = async () => {
+    const pw = prompt(`New password for ${b.dataset.name} (at least 10 characters):`);
+    if (!pw) return;
+    await act(() => api(`/api/users/${b.dataset.pw}/password`, { method: "POST", body: { password: pw } }), "Password set");
+  });
   view.querySelectorAll("select[data-role]").forEach(s => s.onchange = async () => {
     const r = await act(() => api(`/api/users/${s.dataset.role}`, { method: "PUT", body: { role: s.value } }), "Role changed").catch(() => users());
     if (r?.note) toast(r.note);
@@ -522,6 +740,91 @@ async function audit() {
   const rows = await api("/api/audit?limit=500");
   view.innerHTML = `<div class="head"><h1>Audit log</h1></div><div class="card"><table><tr><th>When</th><th>Who</th><th>Action</th><th>Detail</th></tr>
     ${rows.map(r => `<tr><td>${new Date(r.at * 1000).toLocaleString()}</td><td>${esc(r.user || "")}</td><td>${esc(r.action)}</td><td class="muted">${esc(r.detail || "")}</td></tr>`).join("")}</table></div>`;
+}
+
+// ---------- settings & account ----------
+async function settingsPage() {
+  const s = await api("/api/settings");
+  const list = a => esc((a || []).join(", "));
+  view.innerHTML = `
+    <div class="head"><h1>Settings</h1></div>
+    <form id="gform" class="card"><h2>Address</h2><div class="formgrid">
+      <label>Public URL <input name="public_url" value="${esc(s.public_url)}" placeholder="${esc(location.origin)}"><small>The address people use, e.g. https://agentry.example.com. Used for the SSO redirect URI. Empty = whatever address the browser used.</small></label>
+      <label>Trusted reverse proxies <input name="trusted_proxies" value="${esc(s.trusted_proxies)}"><small>Comma-separated IPs or CIDRs whose X-Forwarded-For/Proto headers are trusted. Cookies are marked Secure automatically on HTTPS.</small></label>
+    </div><button class="btn primary">Save</button></form>
+
+    <form id="oform" class="card"><h2>Single sign-on (OpenID Connect)</h2>
+      <label>Redirect URI to register at your identity provider <div class="copy"><code id="ruri">${esc(s.redirect_uri)}</code><button type="button" class="btn" id="copy-ruri">Copy</button></div>
+        <small>Changes with the public URL above (save it first).</small></label>
+      <div class="formgrid">
+        <label style="grid-column:span 2">Issuer <input name="oidc_issuer" value="${esc(s.oidc_issuer)}" placeholder="https://login.microsoftonline.com/<tenant-id>/v2.0">
+          <small>Entra ID: https://login.microsoftonline.com/&lt;tenant-id&gt;/v2.0 · Authentik: https://auth.example.com/application/o/agentry/ · Keycloak: https://kc.example.com/realms/&lt;realm&gt; · Google: https://accounts.google.com</small></label>
+        <label>Client ID <input name="oidc_client_id" value="${esc(s.oidc_client_id)}" autocomplete="off"></label>
+        <label>Client secret <input name="oidc_client_secret" type="password" autocomplete="off" placeholder="${s.oidc_client_secret_set ? "set (leave blank to keep)" : ""}">
+          ${s.oidc_client_secret_set ? `<label class="check" style="margin-top:6px"><input type="checkbox" name="clear_oidc_client_secret"> Remove the stored secret</label>` : ""}</label>
+        <label>Button label <input name="oidc_label" value="${esc(s.oidc_label)}"></label>
+        <label>Scopes <input name="oidc_scopes" value="${esc(s.oidc_scopes)}"></label>
+      </div>
+      <h3>Roles</h3>
+      <p class="muted">Group names or IDs from the groups claim (Entra sends group object IDs). First match wins: admin, reviewer, viewer. With no groups listed, new SSO users get the default role and you set roles on the Users page.</p>
+      <div class="formgrid">
+        <label>Groups claim <input name="oidc_groups_claim" value="${esc(s.oidc_groups_claim)}"></label>
+        <label>Admin groups <input name="oidc_admin_groups" value="${list(s.oidc_admin_groups)}"><small>Comma-separated.</small></label>
+        <label>Reviewer groups <input name="oidc_reviewer_groups" value="${list(s.oidc_reviewer_groups)}"></label>
+        <label>Viewer groups <input name="oidc_viewer_groups" value="${list(s.oidc_viewer_groups)}"></label>
+        <label>Default role <select name="oidc_default_role">${["none", "viewer", "reviewer", "admin"].map(r => `<option ${r === s.oidc_default_role ? "selected" : ""}>${r}</option>`).join("")}</select><small>For users matching no group. "none" = no access.</small></label>
+        <label>Allowed email domains <input name="oidc_allowed_domains" value="${list(s.oidc_allowed_domains)}" placeholder="optional"><small>Comma-separated. Empty = any.</small></label>
+      </div>
+      <div class="row"><button class="btn primary">Save</button><button type="button" class="btn" id="test-oidc">Test issuer</button>
+        ${s.oidc_issuer && s.oidc_client_id ? `<a class="btn" href="/auth/oidc/login">Try signing in</a>` : ""}<span id="oidc-out" class="muted"></span></div>
+    </form>
+
+    <form id="lform" class="card"><h2>Password sign-in</h2>
+      <label class="check"><input type="checkbox" name="local_login" ${s.local_login ? "checked" : ""}> Allow local accounts to sign in with a password</label>
+      ${s.sso_admins ? "" : `<p class="note">To turn this off, first sign in once with SSO using an account that gets the admin role.</p>`}
+      <p class="muted">If SSO breaks while this is off: <code>docker exec -it agentry python -m agentry local-login on</code>, then restart the container.</p>
+      <button class="btn primary">Save</button></form>
+
+    <div class="card"><h2>Server</h2><dl class="kv">
+      <dt>Encryption key</dt><dd>${s.secret_source === "env" ? "From AGENTRY_SECRET_KEY" : `Generated, stored in ${esc(s.data_dir)}/secret.key`} <small class="muted">· back up the data volume; without the key, stored secrets can't be read.</small></dd>
+      <dt>Version</dt><dd id="ver"></dd></dl></div>`;
+  api("/api/me").then(m => $("#ver").textContent = m.version);
+  const save = (form, pick) => async ev => {
+    ev.preventDefault();
+    await act(() => api("/api/settings", { method: "PUT", body: pick(formData(form)) }), "Saved");
+    settingsPage();
+  };
+  $("#gform").onsubmit = save($("#gform"), d => d);
+  $("#oform").onsubmit = save($("#oform"), d => d);
+  $("#lform").onsubmit = save($("#lform"), d => d);
+  $("#copy-ruri").onclick = () => {
+    const t = $("#ruri").textContent;
+    (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(() => toast("Copied"), () => {
+      const r = document.createRange(); r.selectNodeContents($("#ruri")); getSelection().removeAllRanges(); getSelection().addRange(r);
+      toast("Selected; press Ctrl+C");
+    });
+  };
+  $("#test-oidc").onclick = async () => {
+    const out = $("#oidc-out");
+    out.textContent = "Checking…";
+    const r = await api("/api/settings/test-oidc", { method: "POST", body: { issuer: $("#oform").oidc_issuer.value } }).catch(e => ({ ok: false, error: e.message }));
+    out.innerHTML = r.ok ? `${pill("ok")} Found ${esc(r.issuer)}${r.claims_supported && !r.claims_supported.includes($("#oform").oidc_groups_claim.value) ? ` · note: “${esc($("#oform").oidc_groups_claim.value)}” isn't in the provider's advertised claims (may still be sent)` : ""}`
+      : `${pill("error")} ${esc(r.error)}`;
+  };
+}
+async function account() {
+  view.innerHTML = `<div class="head"><h1>Account</h1></div>
+    <div class="card"><dl class="kv"><dt>Name</dt><dd>${esc(ME.name || "")}</dd><dt>Email</dt><dd>${esc(ME.email || "—")}</dd>
+      <dt>Role</dt><dd>${esc(ME.role)}</dd><dt>Sign-in</dt><dd>${ME.local ? "Local password" : "SSO"}</dd></dl></div>
+    ${ME.local ? `<form id="pwform" class="card"><h2>Change password</h2><div class="formgrid">
+      <label>Current password <input name="current" type="password" required autocomplete="current-password"></label>
+      <label>New password <input name="new" type="password" required minlength="10" autocomplete="new-password"><small>At least 10 characters. Signs out your other sessions.</small></label>
+    </div><button class="btn primary">Change</button></form>` : ""}`;
+  $("#pwform")?.addEventListener("submit", async ev => {
+    ev.preventDefault();
+    await act(() => api("/api/me/password", { method: "POST", body: formData(ev.target) }), "Password changed");
+    ev.target.reset();
+  });
 }
 
 boot();

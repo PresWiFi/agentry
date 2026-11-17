@@ -44,7 +44,7 @@ class LLM:
         return r.json()
 
     async def chat(self, model: str, messages: list[dict], *, json_mode: bool = False, temperature: float = 0.2,
-                   num_ctx: int | None = None) -> str:
+                   num_ctx: int | None = None, think: bool | None = None) -> str:
         if self.kind == "ollama":
             body: dict = {"model": model, "messages": messages, "stream": False,
                           "options": {"temperature": temperature}}
@@ -52,6 +52,8 @@ class LLM:
                 body["options"]["num_ctx"] = num_ctx
             if json_mode:
                 body["format"] = "json"
+            if think is not None:
+                body["think"] = think
             data = await self._post("/api/chat", body)
             return (data.get("message") or {}).get("content", "")
         body = {"model": model, "messages": messages, "temperature": temperature}

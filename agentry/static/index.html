@@ -21,6 +21,18 @@
     <p id="no-login" class="muted hidden">No sign-in method is configured. Set AGENTRY_ADMIN_PASSWORD or the OIDC_* variables.</p>
   </form>
 </div>
+<div id="setup" class="login hidden">
+  <form id="setup-form" class="card narrow">
+    <h1>Set up Agentry</h1>
+    <p class="muted">Create the first admin account. The setup code is in the Agentry log: <code>docker logs agentry</code></p>
+    <p id="setup-error" class="error hidden"></p>
+    <label>Setup code <input name="code" required autocomplete="off" placeholder="xxxxxx-xxxxxx-xxxxxx"></label>
+    <label>Username <input name="username" required value="admin" autocomplete="username"></label>
+    <label>Password <input name="password" type="password" required minlength="10" autocomplete="new-password"><small>At least 10 characters.</small></label>
+    <button class="btn primary block">Create admin</button>
+    <p class="muted" style="margin-top:12px">SSO is set up afterwards under Settings.</p>
+  </form>
+</div>
 <div id="shell" class="hidden">
   <nav>
     <div class="brand">Agentry</div>
@@ -32,8 +44,9 @@
     <a href="#/connections" data-role="admin">Connections</a>
     <a href="#/users" data-role="admin">Users</a>
     <a href="#/audit" data-role="admin">Audit log</a>
+    <a href="#/settings" data-role="admin">Settings</a>
     <div class="spacer"></div>
-    <div class="me"><span id="me-name"></span><small id="me-role"></small><button id="logout" class="link">Sign out</button></div>
+    <div class="me"><span id="me-name"></span><small id="me-role"></small><a href="#/account" class="link-plain">Account</a><button id="logout" class="link">Sign out</button></div>
   </nav>
   <main id="view"></main>
 </div>

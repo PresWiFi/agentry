@@ -76,6 +76,9 @@ class SDPSolutions(AgentType):
          "help": "Writes and reviews articles. 14B+ recommended; see docs/models.md."},
         {"key": "num_ctx", "label": "Context length (tokens)", "type": "number", "default": 16384, "min": 2048,
          "max": 262144, "help": "Ollama only. Long articles need 16k+. More context uses more VRAM."},
+        {"key": "thinking", "label": "Thinking", "type": "select", "default": "default",
+         "options": [["default", "Model default"], ["off", "Off (faster)"], ["on", "On"]],
+         "help": "Ollama, for reasoning models like Qwen3. Off is much faster on smaller GPUs."},
         {"key": "mode", "label": "Mode", "type": "select", "default": "review",
          "options": [["review", "Review: changes wait for approval"], ["auto", "Auto: publish changes directly"]]},
         {"key": "style_guide", "label": "Style guide", "type": "textarea", "default": DEFAULT_STYLE,
@@ -154,7 +157,8 @@ class SDPSolutions(AgentType):
             msgs = [{"role": "system", "content": system}, {"role": "user", "content": user}]
             last = None
             for attempt in range(2):
-                raw = await llm.chat(c["model"], msgs, json_mode=True, num_ctx=c["num_ctx"])
+                think = {"on": True, "off": False}.get(c.get("thinking"))
+                raw = await llm.chat(c["model"], msgs, json_mode=True, num_ctx=c["num_ctx"], think=think)
                 try:
                     return parse_json(raw)
                 except ValueError as e:

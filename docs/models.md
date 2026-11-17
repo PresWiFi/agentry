@@ -1,17 +1,20 @@
 # GPU server: what to run
 
-## Stack
+Target: one **NVIDIA Tesla T4** (16 GB, Turing, 70 W). Agentry runs in its own container and calls the GPU server over the network.
+
+## Stack on the GPU server
 
 | Layer | Pick | Notes |
 | --- | --- | --- |
-| OS | Ubuntu Server 24.04 LTS, or Proxmox with the driver on the host (as on lab-pve) | Bare metal is simplest. |
-| Driver | NVIDIA proprietary + `nvidia-container-toolkit` | Toolkit only if inference runs in Docker. |
-| Inference | **Ollama** to start | Swaps models on demand, chat + embeddings in one server, already used on lab-pve. |
-| Later | **vLLM** | When several agents run at once. Continuous batching gives far more throughput, but one model per process and it must fit in VRAM. Add it in Agentry as "OpenAI-compatible". |
+| OS | Ubuntu Server 24.04 LTS (or Proxmox with the driver on the host, like lab-pve) | |
+| Driver | NVIDIA 580-series proprietary | `nvidia-smi` should list the T4. |
+| Inference | **Ollama** | Chat + embeddings in one server, loads/unloads models on demand. |
 | Optional | Open WebUI | Chat UI for staff on the same models. |
-| Optional | `nvidia-smi` / dcgm-exporter + Prometheus | GPU temps and utilization. Agentry shows Ollama's loaded models and VRAM use. |
 
-Agentry itself can run on the GPU server (Docker) or anywhere else on the network.
+vLLM isn't worth it on a single T4: no BF16, and 16 GB only fits 14B models with 4-bit AWQ/GPTQ. Revisit if you add a bigger card and run several agents at once.
+
+**Cooling:** the T4 is passively cooled and expects server-chassis airflow. In a tower or a quiet chassis it throttles. Check under load:
+`nvidia-smi --query-gpu=temperature.gpu,clocks.sm,clocks_throttle_reasons.active --format=csv -l 5`
 
 ## Ollama settings
 
@@ -28,31 +31,34 @@ Environment="OLLAMA_FLASH_ATTENTION=1"
 Environment="OLLAMA_KV_CACHE_TYPE=q8_0"
 ```
 
-- `MAX_LOADED_MODELS=2` keeps the chat model and the embedding model loaded together.
-- Agentry sends `num_ctx` per agent (default 16384). Ollama's default context is small and silently truncates long articles.
-- Ollama has no authentication. Firewall 11434 to the Agentry host only, or put it behind a reverse proxy that checks a bearer token (Agentry can send one: API key field on the server).
+- `MAX_LOADED_MODELS=2` keeps the chat and embedding models in VRAM together.
+- `KV_CACHE_TYPE=q8_0` halves context memory; needs flash attention on.
+- Agentry also sends the context length per agent (default 16384).
+- Ollama has no authentication. Allow 11434 only from the Agentry container's IP: `ufw allow from <agentry-ip> to any port 11434 proto tcp`.
 
-## Models
+## Models for the T4
 
-The job: read a KB article or a handful of tickets, rewrite faithfully, return valid JSON. Instruction following and not inventing steps matter more than raw knowledge. 14B–32B instruct models are the sweet spot.
+```bash
+ollama pull qwen3:14b
+ollama pull nomic-embed-text
+```
 
-| VRAM | Chat model (`ollama pull …`) | Approx. size at Q4 |
-| --- | --- | --- |
-| 4 GB (lab-pve T1200) | `qwen3:4b` | ~3 GB. Too weak for unattended rewrites; testing only. |
-| 8 GB (RTX 2080) | `qwen3:8b`, `llama3.1:8b` | ~5–6 GB. Usable in review mode. |
-| 16 GB | `qwen3:14b`, `gpt-oss:20b` | ~9 GB / ~14 GB |
-| **24 GB (recommended)** | `qwen3:30b-a3b` (fast MoE), `mistral-small3.2:24b`, `gemma3:27b` | ~15–19 GB, leaves room for 16k context + embeddings |
-| 48 GB+ | `qwen3:32b` at Q8, `llama3.3:70b` at Q4 | ~35–43 GB |
-| 80 GB+ | `gpt-oss:120b` | ~65 GB |
+| Use | Model | VRAM (Q4) | Notes |
+| --- | --- | --- | --- |
+| Chat (start here) | `qwen3:14b` | ~9.3 GB | Good instruction following and JSON. Set the agent's **Thinking** to Off unless quality suffers; thinking roughly doubles run time. |
+| Chat (try) | `gpt-oss:20b` | ~13–14 GB | Mixture-of-experts, so fast for its size. Tight on 16 GB with 16k context + embeddings; Ollama may swap models between steps. |
+| Chat (lighter) | `gemma3:12b` | ~8 GB | If 14B is too slow. |
+| Embeddings | `nomic-embed-text` | ~0.3 GB | Default for gap finding. |
+| Embeddings (alt) | `bge-m3` | ~1.2 GB | Better with long or non-English tickets. Changing the embedding model re-embeds everything once. |
 
-Embedding model (gap finding): `bge-m3` (multilingual, long input, ~1.2 GB) or `nomic-embed-text` (~0.3 GB). Pick one and keep it: changing it re-embeds everything.
+Budget with `qwen3:14b`: ~9.3 GB weights + ~1.5–2 GB for 16k context + 0.3 GB embeddings ≈ 12 GB, leaving headroom. Agentry's Model servers page shows what's loaded and flags models that spilled onto the CPU.
 
-Hardware suggestion: one 24 GB card (RTX 3090/4090, RTX A5000, L4) covers this agent and a few more. Add VRAM before adding cards; splitting a model across cards is slower.
+Too big for a T4 without spilling to CPU: `mistral-small3.2:24b`, `gemma3:27b`, `qwen3:30b-a3b`, `qwen3:32b`.
 
-Newer releases (e.g. Qwen 3.5) may be on <https://ollama.com/library> by the time you read this; try them on a copy of the agent in review mode before switching.
+Newer releases (e.g. Qwen 3.5) may be on <https://ollama.com/library>. Try them on a second agent in Review mode before switching.
 
-## Picking between candidates
+## Picking between models
 
-1. Create one agent per model, same connection, mode **Review**, `Solutions per run` 10.
-2. Run each once and compare the proposals side by side.
-3. Watch for: invented steps, dropped commands or links, broken JSON (shows as warnings in the run log), and speed (run duration).
+1. Create one agent per model with the same connection, Review mode, `Solutions per run` 10.
+2. Run each once and compare proposals side by side.
+3. Watch for invented steps, dropped commands or links, JSON warnings in the run log, and run duration.
