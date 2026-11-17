@@ -39,7 +39,7 @@ def test_agent_on_llamacpp(monkeypatch):
                                                "secret": {"api_key": "KEY"}}, headers=H).json()["id"]
         aid = c.post("/api/agents", json={"name": "KB-llama", "type": "sdp_solutions", "config": {
             "connection": cid, "server": s_chat, "model": "anything", "embed_server": s_emb,
-            "embed_model": "whatever", "find_gaps": True, "new_topic": "General"}}, headers=H).json()["id"]
+            "embed_model": "whatever", "find_gaps": True, "review_existing": True, "new_topic": "General"}}, headers=H).json()["id"]
 
         t = c.post(f"/api/agents/{aid}/test", headers=H).json()
         assert t["model"]["ok"] and "qwen2.5-14b" in t["model"]["detail"]

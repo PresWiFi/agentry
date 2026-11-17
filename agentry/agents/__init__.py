@@ -21,6 +21,9 @@ class AgentType:
     # Field: {key, label, type: text|textarea|number|bool|select|server|model|embed_model|connection,
     #         default, help, options (select), connection_kind (connection), required}
     fields: list[dict] = []
+    # Set note_label to let people tell the agent things ("We moved to VPN client v5"); run() gets ctx.input.
+    note_label = ""
+    note_help = ""
 
     def defaults(self) -> dict:
         return {f["key"]: f.get("default") for f in self.fields}
@@ -73,8 +76,11 @@ def connection(conn_id: int | None) -> tuple[dict, dict]:
 
 
 class RunContext:
-    def __init__(self, agent: dict, run_id: int, agent_type: AgentType, cancel_check: Callable[[], bool]):
+    def __init__(self, agent: dict, run_id: int, agent_type: AgentType, cancel_check: Callable[[], bool],
+                 input: str | None = None, user: str | None = None):
         self.agent = agent
+        self.input = input
+        self.user = user
         self.agent_id = agent["id"]
         self.run_id = run_id
         self.type = agent_type

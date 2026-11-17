@@ -26,7 +26,7 @@ def schedule_next(agent_id: int, minutes: int, enabled: bool, from_time: float |
     db.ex("UPDATE agents SET next_run_at=? WHERE id=?", (nxt, agent_id))
 
 
-def start_run(agent_id: int, trigger: str, user: str | None = None) -> int:
+def start_run(agent_id: int, trigger: str, user: str | None = None, input: str | None = None) -> int:
     if agent_id in running_agents():
         raise RuntimeError("This agent is already running.")
     agent = db.one("SELECT * FROM agents WHERE id=?", (agent_id,))
@@ -34,9 +34,9 @@ def start_run(agent_id: int, trigger: str, user: str | None = None) -> int:
         raise RuntimeError("No such agent.")
     if agent["type"] not in TYPES:
         raise RuntimeError(f"Unknown agent type {agent['type']}.")
-    run_id = db.ex("INSERT INTO runs(agent_id, trigger, triggered_by, status, started_at) VALUES (?,?,?,?,?)",
-                   (agent_id, trigger, user, "running", time.time()))
-    _tasks[agent_id] = asyncio.create_task(_run(agent, run_id))
+    run_id = db.ex("INSERT INTO runs(agent_id, trigger, triggered_by, status, started_at, input) VALUES (?,?,?,?,?,?)",
+                   (agent_id, trigger, user, "running", time.time(), input))
+    _tasks[agent_id] = asyncio.create_task(_run(agent, run_id, input, user))
     return run_id
 
 
@@ -44,12 +44,12 @@ def cancel_run(run_id: int) -> None:
     _cancel.add(run_id)
 
 
-async def _run(agent: dict, run_id: int) -> None:
+async def _run(agent: dict, run_id: int, input: str | None, user: str | None) -> None:
     atype = TYPES[agent["type"]]
     ctx = None
     status, summary = "ok", ""
     try:
-        ctx = RunContext(agent, run_id, atype, lambda: run_id in _cancel)
+        ctx = RunContext(agent, run_id, atype, lambda: run_id in _cancel, input, user)
         ctx.log(f"Run started ({atype.name})")
         summary = await atype.run(ctx) or ""
     except Cancelled:

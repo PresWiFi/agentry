@@ -1,6 +1,10 @@
 """Keeps ServiceDesk Plus Solutions (knowledge base articles) in shape.
 
-Two jobs, each optional:
+Main use: a person tells the agent what changed ("We moved to VPN client v5, reconnect from the tray
+icon now"). The agent finds the solutions that the note affects and proposes edits, or drafts a new
+solution when none fits.
+
+Two scheduled jobs, each optional:
 - Review: reads existing solutions (oldest unreviewed first), asks the model whether each needs work, and
   proposes a rewrite when it does.
 - Gaps: embeds recently resolved requests and existing solutions, finds groups of similar requests that
@@ -12,6 +16,7 @@ straight to ServiceDesk Plus.
 from __future__ import annotations
 
 import json
+import re
 import time
 
 from .. import db
@@ -64,16 +69,76 @@ Reply with one JSON object and nothing else:
   "notes": "anything the reviewer should check"}}"""
 
 
+ROUTE_SYSTEM = """You maintain an IT knowledge base in ManageEngine ServiceDesk Plus.
+A technician tells you about a change or a new procedure. You get the note and a shortlist of existing
+solution articles that might be related. Decide which articles the note makes out of date, and whether
+it needs a new article instead.
+
+Pick an article only if the note changes or adds to what that article tells people to do. If none
+fits, create a new one.
+
+Reply with one JSON object and nothing else:
+{"update": ["id of each article to edit"],
+ "create": true or false,
+ "topic": "best topic for a new article, from the topic list (or empty)",
+ "reason": "one sentence"}"""
+
+EDIT_SYSTEM = """You maintain an IT knowledge base in ManageEngine ServiceDesk Plus.
+A technician tells you about a change. Update the solution article so it matches the note.
+
+Style guide:
+{style}
+
+Change only what the note affects and keep everything else as it is. Use only facts from the note and
+the article. If the note doesn't apply to this article after all, set "changed" to false.
+
+Reply with one JSON object and nothing else:
+{{"changed": true or false,
+  "summary": "what you changed, one or two sentences",
+  "title": "title (unchanged unless the note makes it wrong)",
+  "keywords": "comma-separated search keywords",
+  "description_html": "the full updated article as simple HTML (p, h3, ol, ul, li, b, code, pre, a, img, table)"}}"""
+
+NOTE_DRAFT_SYSTEM = """You write IT knowledge base articles for ManageEngine ServiceDesk Plus.
+A technician tells you about a change or a procedure that has no article yet. Write ONE solution
+article from the note.
+
+Style guide:
+{style}
+
+Use only what the note says. Where steps or details are missing, add "[VERIFY]" lines instead of
+guessing.
+
+Reply with one JSON object and nothing else:
+{{"title": "clear, searchable title",
+  "keywords": "comma-separated search keywords",
+  "description_html": "the article as simple HTML (p, h3, ol, ul, li, b, code, pre, a, table)",
+  "notes": "anything the reviewer should check"}}"""
+
+STOP = set("""a an and are as at be been but by can do does for from has have how i if in into is it its
+new now of on or our so that the their them then there this to up use used uses using was we were what
+when where which will with you your""".split())
+
+
+def _words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9][a-z0-9.+#-]*[a-z0-9]|[a-z0-9]", text.lower())
+            if len(w) > 1 and w not in STOP}
+
+
 class SDPSolutions(AgentType):
     key = "sdp_solutions"
     name = "ServiceDesk Plus Solutions"
-    description = "Reviews and rewrites Solution articles, and drafts new ones for recurring tickets with no article."
+    description = ("Tell it what changed and it edits the matching Solution articles, or drafts a new one. "
+                   "Can also review articles and draft solutions for recurring tickets on a schedule.")
+    note_label = "Tell the agent what changed"
+    note_help = ("e.g. \"We moved to GlobalProtect 6.2. Users now reconnect from the tray icon, not the Start menu.\" "
+                 "It finds the solutions this affects and proposes edits, or drafts a new one.")
     fields = [
         {"key": "connection", "label": "ServiceDesk Plus connection", "type": "connection", "connection_kind": "sdp",
          "required": True},
         {"key": "server", "label": "Model server", "type": "server", "required": True},
         {"key": "model", "label": "Chat model", "type": "model", "default": "", "required": True,
-         "help": "Writes and reviews articles. 14B+ recommended; see docs/models.md."},
+         "help": "Writes and edits articles. 8B works, 14B writes better; see docs/models.md."},
         {"key": "num_ctx", "label": "Context length (tokens)", "type": "number", "default": 16384, "min": 2048,
          "max": 262144, "help": "Ollama only. Long articles need 16k+. More context uses more VRAM."},
         {"key": "thinking", "label": "Thinking", "type": "select", "default": "default",
@@ -83,9 +148,19 @@ class SDPSolutions(AgentType):
          "options": [["review", "Review: changes wait for approval"], ["auto", "Auto: publish changes directly"]]},
         {"key": "style_guide", "label": "Style guide", "type": "textarea", "default": DEFAULT_STYLE,
          "help": "Given to the model for every review and draft."},
+        {"key": "embed_model", "label": "Embedding model", "type": "embed_model", "default": "",
+         "help": "e.g. nomic-embed-text. Finds the solutions a note is about by meaning, not just matching words. "
+                 "Needed for gap finding."},
+        {"key": "embed_server", "label": "Embedding server", "type": "server", "default": None,
+         "help": "Empty = the chat model server. llama.cpp serves one model per process, so point this at the "
+                 "llama-server started with --embeddings."},
+        {"key": "note_max_updates", "label": "Max solutions edited per note", "type": "number", "default": 3,
+         "min": 1, "max": 10},
+        {"key": "new_topic", "label": "Topic for new solutions", "type": "text", "default": "",
+         "help": "Topic name or ID in ServiceDesk Plus. Used when the model doesn't pick one of your existing topics."},
 
-        {"key": "review_existing", "label": "Review existing solutions", "type": "bool", "default": True,
-         "section": "Review"},
+        {"key": "review_existing", "label": "Review existing solutions on schedule", "type": "bool",
+         "default": False, "section": "Review"},
         {"key": "review_max", "label": "Solutions per run", "type": "number", "default": 5, "min": 1, "max": 200},
         {"key": "revisit_days", "label": "Re-review after (days)", "type": "number", "default": 90, "min": 1,
          "max": 3650, "help": "A solution changed in ServiceDesk Plus is re-reviewed sooner."},
@@ -94,11 +169,6 @@ class SDPSolutions(AgentType):
 
         {"key": "find_gaps", "label": "Draft solutions for recurring tickets", "type": "bool", "default": False,
          "section": "Gaps"},
-        {"key": "embed_server", "label": "Embedding server", "type": "server", "default": None,
-         "help": "Empty = the chat model server. llama.cpp serves one model per process, so point this at the "
-                 "llama-server started with --embeddings."},
-        {"key": "embed_model", "label": "Embedding model", "type": "embed_model", "default": "",
-         "help": "Needed for gap finding, e.g. nomic-embed-text or bge-m3."},
         {"key": "gap_lookback_days", "label": "Look at tickets from the last (days)", "type": "number", "default": 30,
          "min": 1, "max": 365},
         {"key": "gap_statuses", "label": "Ticket statuses", "type": "text", "default": "Resolved, Closed"},
@@ -111,8 +181,6 @@ class SDPSolutions(AgentType):
         {"key": "gap_min_cluster", "label": "Min tickets per gap", "type": "number", "default": 3, "min": 2,
          "max": 50},
         {"key": "gap_max_drafts", "label": "Max drafts per run", "type": "number", "default": 3, "min": 1, "max": 20},
-        {"key": "new_topic", "label": "Topic for new solutions", "type": "text", "default": "",
-         "help": "Topic name or ID in ServiceDesk Plus."},
     ]
 
     def validate(self, config: dict) -> dict:
@@ -150,6 +218,8 @@ class SDPSolutions(AgentType):
             ctx.log("Loading solutions from ServiceDesk Plus")
             solutions = [s async for s in sdp.list_solutions()]
             ctx.log(f"{len(solutions)} solutions")
+            if ctx.input:
+                return await self._note(ctx, sdp, solutions, ctx.input)
             if c["review_existing"]:
                 parts.append(await self._review(ctx, sdp, solutions))
             if c["find_gaps"]:
@@ -275,31 +345,42 @@ class SDPSolutions(AgentType):
                 out[key] = v
         return out
 
-    async def _gaps(self, ctx: RunContext, sdp: SDP, solutions: list[dict]) -> str:
+    async def _solution_vectors(self, ctx: RunContext, sdp: SDP, solutions: list[dict]) -> dict[str, list[float]]:
+        """Solution id -> vector. Only solutions changed since the last run are fetched and embedded."""
         c = ctx.config
         conn_id = c["connection"]
-        ctx.log("Gaps: embedding solutions")
-        sol_items = []
+        items = []
         for s in solutions:
+            ctx.check()
             sid = str(s["id"])
             upd = str(updated_ms(s) or "")
             key = f"c{conn_id}:sol:{sid}"
             cached = db.one("SELECT hash FROM embeddings WHERE key=? AND model=?", (key, self._embed_key(c)))
             if cached and cached["hash"] == sha(upd):
-                sol_items.append((key, sha(upd), ""))
+                items.append((key, sha(upd), ""))
                 continue
             full = await sdp.get_solution(sid)
             text = clip(f"{full.get('title', '')}\n{full.get('keywords') or ''}\n"
                         f"{html_to_text(full.get('description'))}", 3000)
-            sol_items.append((key, sha(upd), text))
+            items.append((key, sha(upd), text))
+        vecs = await self._embed_cached(ctx, items)
+        prefix = f"c{conn_id}:sol:"
+        return {k[len(prefix):]: v for k, v in vecs.items()}
+
+    async def _gaps(self, ctx: RunContext, sdp: SDP, solutions: list[dict]) -> str:
+        c = ctx.config
+        ctx.log("Gaps: embedding solutions")
+        sol_items = []
+        sol_vecs = list((await self._solution_vectors(ctx, sdp, solutions)).values())
         # Pending drafts count as coverage too, so the same gap isn't drafted twice.
         for p in db.q("SELECT id, proposed FROM proposals WHERE agent_id=? AND kind='create' AND status='pending'",
                       (ctx.agent_id,)):
             d = json.loads(p["proposed"])
             text = clip(f"{d.get('title', '')}\n{d.get('keywords', '')}\n{html_to_text(d.get('description'))}", 3000)
             sol_items.append((f"proposal:{p['id']}", sha(text), text))
-        sol_vecs = list((await self._embed_cached(ctx, sol_items)).values())
+        sol_vecs += list((await self._embed_cached(ctx, sol_items)).values())
 
+        conn_id = c["connection"]
         since = int((time.time() - c["gap_lookback_days"] * 86400) * 1000)
         statuses = [s.strip() for s in c["gap_statuses"].split(",") if s.strip()]
         seen = set(ctx.state("gap_seen", []))
@@ -379,6 +460,117 @@ class SDPSolutions(AgentType):
             drafted += 1
         ctx.set_state("gap_seen", sorted(seen)[-20000:])
         return f"{len(uncovered)} uncovered tickets, {len(big)} gaps, {drafted} drafts proposed"
+
+    # ---------- notes ----------
+
+    async def _candidates(self, ctx: RunContext, sdp: SDP, solutions: list[dict], note: str) -> list[dict]:
+        """Shortlist of solutions the note may be about: best word matches, plus best embedding matches."""
+        c = ctx.config
+        nw = _words(note)
+        scored = []
+        for s in solutions:
+            title = _words(s.get("title") or "")
+            other = _words(f"{s.get('keywords') or ''} {(s.get('topic') or {}).get('name') or ''}")
+            score = 2 * len(nw & title) + len(nw & other)
+            if score:
+                scored.append((score, s))
+        scored.sort(key=lambda x: -x[0])
+        picked = {str(s["id"]): s for _, s in scored[:8]}
+        if c["embed_model"]:
+            ctx.log("Matching the note against solutions by meaning (embeddings)")
+            vecs = await self._solution_vectors(ctx, sdp, solutions)
+            nv = (await ctx.llm(c["embed_server"] or c["server"]).embed(c["embed_model"], [note]))[0]
+            by_id = {str(s["id"]): s for s in solutions}
+            for sim, sid in sorted(((cosine(nv, v), sid) for sid, v in vecs.items()), reverse=True)[:8]:
+                if sim >= 0.45 and sid in by_id:
+                    picked.setdefault(sid, by_id[sid])
+        return list(picked.values())[:14]
+
+    async def _note(self, ctx: RunContext, sdp: SDP, solutions: list[dict], note: str) -> str:
+        c = ctx.config
+        ask = self._call_model(ctx)
+        by = f" from {ctx.user}" if ctx.user else ""
+        quoted = "\n".join("> " + line for line in note.strip().splitlines())
+        topics = sorted({(s.get("topic") or {}).get("name") for s in solutions} - {None, ""})
+        cands = await self._candidates(ctx, sdp, solutions, note)
+        ctx.log(f"{len(cands)} possibly related solutions: " +
+                (", ".join(f"{s['id']} \"{s.get('title', '')}\"" for s in cands) or "none"))
+
+        update_ids, create, topic = [], True, ""
+        if cands:
+            listing = "\n".join(f"[{s['id']}] {s.get('title', '')} (topic: {(s.get('topic') or {}).get('name', '')}; "
+                                f"keywords: {s.get('keywords') or ''})" for s in cands)
+            route = await ask(ROUTE_SYSTEM, f"Note:\n{note}\n\nShortlisted solutions:\n{listing}\n\n"
+                                            f"Topics: {', '.join(topics)}")
+            valid = {str(s["id"]) for s in cands}
+            raw_ids = route.get("update") or []
+            update_ids = [str(i).strip("[] ") for i in (raw_ids if isinstance(raw_ids, list) else [raw_ids])]
+            update_ids = [i for i in dict.fromkeys(update_ids) if i in valid][: c["note_max_updates"]]
+            create = bool(route.get("create")) or not update_ids
+            topic = str(route.get("topic") or "")
+            ctx.log(f"Model: {route.get('reason') or ''} → edit {', '.join(update_ids) or 'none'}"
+                    f"{', create a new solution' if create else ''}")
+        else:
+            ctx.log("No related solutions found; drafting a new one")
+
+        pending = ctx.pending_targets()
+        max_chars = int(c["num_ctx"] * 2.2)
+        system = EDIT_SYSTEM.format(style=c["style_guide"])
+        edited = 0
+        for sid in update_ids:
+            ctx.check()
+            full = await sdp.get_solution(sid)
+            title = full.get("title") or ""
+            desc = full.get("description") or ""
+            if len(desc) > max_chars:
+                ctx.log(f"Solution {sid} \"{title}\" is too long for the context length; skipped", "warn")
+                continue
+            if sid in pending:
+                ctx.log(f"Solution {sid} already has a proposal waiting for review; approve or reject one of them", "warn")
+            ctx.log(f"Editing {sid} \"{title}\"")
+            out = await ask(system, f"Note:\n{note}\n\nTitle: {title}\nKeywords: {full.get('keywords') or ''}\n\n"
+                                    f"Article HTML:\n{desc}")
+            if out.get("changed") is False or not out.get("description_html"):
+                ctx.log(f"Solution {sid}: the model says the note doesn't change it")
+                continue
+            new = {}
+            new_title = str(out.get("title") or "").strip()
+            if new_title and new_title != title:
+                new["title"] = new_title[:250]
+            new_desc = clean_html(str(out["description_html"]))
+            if new_desc and html_to_text(new_desc) != html_to_text(desc):
+                new["description"] = new_desc
+            new_kw = str(out.get("keywords") or "").strip()
+            if new_kw and new_kw != (full.get("keywords") or ""):
+                new["keywords"] = new_kw[:500]
+            if not new:
+                ctx.log(f"Solution {sid}: nothing changed")
+                continue
+            await ctx.propose("update", f"Update: {title}", new, target_id=sid,
+                              rationale=f"Note{by}:\n{quoted}\n\n{out.get('summary') or ''}".strip(),
+                              original={"title": title, "description": desc, "keywords": full.get("keywords") or "",
+                                        "topic": (full.get("topic") or {}).get("name"), "_updated": updated_ms(full)})
+            edited += 1
+
+        created = 0
+        if create:
+            ctx.check()
+            ctx.log("Drafting a new solution from the note")
+            out = await ask(NOTE_DRAFT_SYSTEM.format(style=c["style_guide"]), f"Note:\n{note}")
+            desc = clean_html(str(out.get("description_html") or ""))
+            title = str(out.get("title") or "").strip()[:250]
+            if desc and title:
+                match = next((t for t in topics if t.lower() == topic.strip().lower()), "")
+                rationale = f"Note{by}:\n{quoted}"
+                if out.get("notes"):
+                    rationale += f"\n\nNotes: {out['notes']}"
+                await ctx.propose("create", f"New: {title}",
+                                  {"title": title, "description": desc, "keywords": str(out.get("keywords") or "")[:500],
+                                   "topic": match or c["new_topic"]}, rationale=rationale)
+                created = 1
+            else:
+                ctx.log("Draft came back empty", "warn")
+        return f"Note: {edited} edits, {created} new solutions proposed"
 
     async def _request_text(self, sdp: SDP, rid: str, listed: dict) -> str:
         try:

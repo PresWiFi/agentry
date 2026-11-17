@@ -417,7 +417,7 @@ async def test_connection(cid: int, u=auth.need("admin")):
 @app.get("/api/agent-types")
 def agent_types(u=auth.need("viewer")):
     return [{"key": t.key, "name": t.name, "description": t.description, "fields": t.fields,
-             "defaults": t.defaults()} for t in TYPES.values()]
+             "defaults": t.defaults(), "note_label": t.note_label, "note_help": t.note_help} for t in TYPES.values()]
 
 
 def _agent_out(a: dict) -> dict:
@@ -500,6 +500,26 @@ async def run_agent(aid: int, u=auth.need("admin")):
     return {"run_id": rid}
 
 
+@app.post("/api/agents/{aid}/note")
+async def note_agent(aid: int, body: dict = Body(...), u=auth.need("reviewer")):
+    text = str(body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "Write what changed.")
+    if len(text) > 8000:
+        raise HTTPException(400, "Keep the note under 8000 characters.")
+    a = db.one("SELECT type FROM agents WHERE id=?", (aid,))
+    if not a or a["type"] not in TYPES:
+        raise HTTPException(404, "No such agent.")
+    if not TYPES[a["type"]].note_label:
+        raise HTTPException(400, "This agent type doesn't take notes.")
+    try:
+        rid = runner.start_run(aid, "note", u["username"], text)
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
+    db.audit(u["username"], "agent.note", {"id": aid, "run": rid, "note": text[:500]})
+    return {"run_id": rid}
+
+
 @app.post("/api/agents/{aid}/test")
 async def test_agent(aid: int, u=auth.need("admin")):
     a = db.one("SELECT * FROM agents WHERE id=?", (aid,))
@@ -561,6 +581,7 @@ def run(rid: int, after: int = 0, u=auth.need("viewer")):
         raise HTTPException(404, "No such run.")
     r["logs"] = db.q("SELECT id, at, level, message FROM run_logs WHERE run_id=? AND id>? ORDER BY id LIMIT 2000",
                      (rid, after))
+    r["proposals"] = db.q("SELECT id, kind, title, status FROM proposals WHERE run_id=? ORDER BY id", (rid,))
     return r
 
 

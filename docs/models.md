@@ -57,6 +57,13 @@ Too big for a T4 without spilling to CPU: `mistral-small3.2:24b`, `gemma3:27b`, 
 
 Newer releases (e.g. Qwen 3.5) may be on <https://ollama.com/library>. Try them on a second agent in Review mode before switching.
 
+## 8 GB GPUs (e.g. RTX PRO 2000, RTX 4060)
+
+- Chat: `qwen3:8b`, Thinking off, context 12288. Drop to 8192 if `ollama ps` shows a CPU/GPU split.
+- Embeddings: `nomic-embed-text`.
+- Same Ollama settings as above. If the GPU also drives displays, Windows takes some of the VRAM.
+- `qwen3:4b` if 8b is too slow; edits are noticeably weaker.
+
 ## Picking between models
 
 1. Create one agent per model with the same connection, Review mode, `Solutions per run` 10.

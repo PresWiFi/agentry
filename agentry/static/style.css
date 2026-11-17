@@ -62,3 +62,6 @@ nav .me a.link-plain { padding:0; color:var(--accent); } nav .me a.link-plain:ho
 .copy { display:flex; gap:8px; align-items:center; } .copy code { flex:1; padding:7px 10px; border:1px solid var(--line); border-radius:6px; background:var(--bg); overflow-x:auto; white-space:nowrap; }
 code { font-family:ui-monospace, Consolas, monospace; font-size:12.5px; }
 .note { border-left:3px solid var(--warn); padding:6px 12px; margin:0 0 12px; background:color-mix(in srgb, var(--warn) 8%, transparent); }
+textarea.note { min-height:90px; font-family:inherit; font-size:14px; }
+.note-text { white-space:pre-wrap; }
+#note-form small { display:block; margin:6px 0 12px; }

@@ -3,8 +3,11 @@
 Web app for running AI agents against a local GPU server. Agents propose changes; people approve them before anything is published (or an agent can be set to publish directly).
 
 First agent: **ServiceDesk Plus Solutions**
-- **Review**: reads existing Solution articles, proposes rewrites for unclear or badly structured ones.
-- **Gaps**: groups recently resolved tickets that no Solution covers (embeddings) and drafts a new Solution from how they were resolved.
+- **Notes**: tell it what changed ("We moved to GlobalProtect 6.2; reconnect from the tray icon"). It finds the Solutions the note affects and proposes edits, or drafts a new Solution if none fits. Type the note on the dashboard or the agent page.
+- **Review** (optional, scheduled): reads existing Solution articles, proposes rewrites for unclear or badly structured ones.
+- **Gaps** (optional, scheduled): groups recently resolved tickets that no Solution covers (embeddings) and drafts a new Solution from how they were resolved.
+
+Matching a note to Solutions uses word overlap with titles and keywords, plus embeddings when an embedding model is set (recommended: it also matches on article content and meaning).
 
 ![Proposal review](docs/proposal.png)
 
@@ -14,7 +17,7 @@ First agent: **ServiceDesk Plus Solutions**
 - Agents: schedule (every N minutes) or run by hand, live run log, stop button.
 - Proposals: side-by-side current vs proposed, edit before approving, reject. Updates are refused if the Solution changed in ServiceDesk Plus after the proposal was made.
 - Sign-in: OpenID Connect (Entra ID, Authentik, Keycloak, Google, …) with group → role mapping, and local accounts.
-- Roles: admin (everything), reviewer (approve/reject), viewer (read-only).
+- Roles: admin (everything), reviewer (send notes, approve/reject), viewer (read-only).
 - All configuration in the UI. Secrets encrypted at rest. Audit log.
 - Model output is stripped to formatting-only HTML before it's stored or sent to ServiceDesk Plus.
 
@@ -124,4 +127,4 @@ Subclass `AgentType` in `agentry/agents/`, declare `fields` (the settings form i
 
 ## Status
 
-v0.2.0. Not yet tested against a real ServiceDesk Plus instance, the T4, or a real identity provider. SDP field names for request resolutions and Solution timestamps may need adjusting.
+v0.3.0. Not yet tested against a real ServiceDesk Plus instance, the T4, or a real identity provider. SDP field names for request resolutions and Solution timestamps may need adjusting.

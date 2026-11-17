@@ -92,7 +92,19 @@ class FakeOllama:
             self.chats.append(body)
             system = body["messages"][0]["content"]
             user = body["messages"][-1]["content"]
-            if "review one solution" in system:
+            if "Decide which articles" in system:
+                note = user.split("Shortlisted solutions:")[0].lower()
+                if "vpn" in note:
+                    reply = {"update": ["101", "999"], "create": False, "topic": "", "reason": "VPN article covers it"}
+                else:
+                    reply = {"update": [], "create": True, "topic": "network", "reason": "nothing fits"}
+            elif "matches the note" in system:
+                reply = {"changed": True, "summary": "Replaced the old client with v5.", "title": "VPN: connect with client v5",
+                         "keywords": "vpn, v5", "description_html": "<ol><li>Open VPN client v5 from the tray.</li></ol>"}
+            elif "has no article yet" in system:
+                reply = {"title": "Floor 3 printer uses tray 4", "keywords": "printer, tray",
+                         "description_html": "<p>Load paper in tray 4.</p>", "notes": "Check the model number"}
+            elif "review one solution" in system:
                 if "Title: vpn" in user:
                     reply = {"verdict": "update", "issues": ["Vague title", "No steps"],
                              "title": "VPN won't connect: restart the VPN client", "keywords": "vpn, remote",

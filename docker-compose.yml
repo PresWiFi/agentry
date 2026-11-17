@@ -5,7 +5,7 @@
 # Open http://<host>:8090, create the admin, then add your GPU server(s) under Model servers.
 #
 # Update:  docker compose pull && docker compose up -d
-# Pin a version by replacing :latest with e.g. :0.2.0
+# Pin a version by replacing :latest with e.g. :0.3.0
 
 services:
   agentry:

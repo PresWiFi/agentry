@@ -80,7 +80,7 @@ def test_full_flow(env):
 
     aid = c.post("/api/agents", json={"name": "KB", "type": "sdp_solutions", "schedule_minutes": 0, "config": {
         "connection": cid, "server": sid, "model": "qwen3:14b", "embed_model": "nomic-embed-text",
-        "find_gaps": True, "new_topic": "General"}}, headers=H).json()["id"]
+        "find_gaps": True, "review_existing": True, "new_topic": "General"}}, headers=H).json()["id"]
     t = c.post(f"/api/agents/{aid}/test", headers=H).json()
     assert t["model"]["ok"] and t["embed_model"]["ok"] and t["connection"]["solutions"] == 2
 
@@ -125,7 +125,7 @@ def test_conflict_when_solution_changed(env):
     cid = c.post("/api/connections", json={"name": "SDP", "kind": "sdp", "config": {"base_url": "https://sdp.test"},
                                            "secret": {"api_key": "KEY"}}, headers=H).json()["id"]
     aid = c.post("/api/agents", json={"name": "KB2", "type": "sdp_solutions", "config": {
-        "connection": cid, "server": sid, "model": "m"}}, headers=H).json()["id"]
+        "connection": cid, "server": sid, "model": "m", "review_existing": True}}, headers=H).json()["id"]
     wait_run(c, c.post(f"/api/agents/{aid}/run", headers=H).json()["run_id"])
     p = [p for p in c.get("/api/proposals").json() if p["agent_id"] == aid][0]
     sdp.solutions["101"]["last_updated_time"] = {"value": "1750000000000"}  # someone edited it in SDP
@@ -145,3 +145,56 @@ def test_roles(env):
     assert c.post("/api/servers", json={"name": "x", "kind": "ollama", "base_url": "http://x"}, headers=H).status_code == 403
     assert c.post("/api/proposals/1/approve", headers=H).status_code == 403
     assert c.get("/api/users").status_code == 403
+
+
+def test_note_edits_or_creates(env):
+    c, sdp, oll = env
+    login(c)
+    sid = c.post("/api/servers", json={"name": "gpu", "kind": "ollama", "base_url": "http://gpu:11434"}, headers=H).json()["id"]
+    cid = c.post("/api/connections", json={"name": "SDP", "kind": "sdp", "config": {"base_url": "https://sdp.test"},
+                                           "secret": {"api_key": "KEY"}}, headers=H).json()["id"]
+    aid = c.post("/api/agents", json={"name": "Notes", "type": "sdp_solutions", "schedule_minutes": 0, "config": {
+        "connection": cid, "server": sid, "model": "m", "new_topic": "General"}}, headers=H).json()["id"]
+    assert c.post(f"/api/agents/{aid}/note", json={"text": "  "}, headers=H).status_code == 400
+
+    # A note about something an article covers → edit that article (the bogus id 999 is dropped).
+    run = wait_run(c, c.post(f"/api/agents/{aid}/note", json={"text": "We moved everyone to VPN client v5"},
+                             headers=H).json()["run_id"])
+    assert run["status"] == "ok", run
+    assert run["input"] == "We moved everyone to VPN client v5" and run["trigger"] == "note"
+    assert run["summary"] == "Note: 1 edits, 0 new solutions proposed"
+    assert [p["kind"] for p in run["proposals"]] == ["update"]
+    p = c.get(f"/api/proposals/{run['proposals'][0]['id']}").json()
+    assert p["target_id"] == "101" and "> We moved everyone to VPN client v5" in p["rationale"] and "admin" in p["rationale"]
+    assert p["proposed"]["title"] == "VPN: connect with client v5"
+    assert "[101] vpn" in next(ch for ch in oll.chats if "Decide which" in ch["messages"][0]["content"])["messages"][-1]["content"]
+
+    # A note about something new → new article, topic matched case-insensitively to an existing one.
+    run = wait_run(c, c.post(f"/api/agents/{aid}/note", json={"text": "The floor 3 network printer now takes paper from tray 4"},
+                             headers=H).json()["run_id"])
+    assert run["summary"] == "Note: 0 edits, 1 new solutions proposed", run
+    p = c.get(f"/api/proposals/{run['proposals'][0]['id']}").json()
+    assert p["kind"] == "create" and p["proposed"]["topic"] == "Network"
+    r = c.post(f"/api/proposals/{p['id']}/approve", headers=H)
+    assert r.status_code == 200 and sdp.solutions["500"]["title"] == "Floor 3 printer uses tray 4"
+
+    # Scheduled run with both jobs off (the default) does nothing.
+    run = wait_run(c, c.post(f"/api/agents/{aid}/run", headers=H).json()["run_id"])
+    assert run["summary"] == "Nothing to do (both jobs are off)"
+
+
+def test_note_with_embeddings(env):
+    c, sdp, oll = env
+    login(c)
+    sid = c.post("/api/servers", json={"name": "gpu", "kind": "ollama", "base_url": "http://gpu:11434"}, headers=H).json()["id"]
+    cid = c.post("/api/connections", json={"name": "SDP", "kind": "sdp", "config": {"base_url": "https://sdp.test"},
+                                           "secret": {"api_key": "KEY"}}, headers=H).json()["id"]
+    aid = c.post("/api/agents", json={"name": "Notes2", "type": "sdp_solutions", "schedule_minutes": 0, "config": {
+        "connection": cid, "server": sid, "model": "m", "embed_model": "nomic-embed-text"}}, headers=H).json()["id"]
+    # Embedding search runs alongside the word match and the run still ends in an edit of 101.
+    run = wait_run(c, c.post(f"/api/agents/{aid}/note", json={"text": "Restart steps changed for the vpn"},
+                             headers=H).json()["run_id"])
+    assert run["status"] == "ok", run
+    logs = " ".join(l["message"] for l in run["logs"])
+    assert "by meaning" in logs and '101 "vpn"' in logs
+    assert run["proposals"][0]["kind"] == "update"

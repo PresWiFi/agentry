@@ -52,11 +52,12 @@ CREATE TABLE IF NOT EXISTS agent_state (
 CREATE TABLE IF NOT EXISTS runs (
   id INTEGER PRIMARY KEY,
   agent_id INTEGER NOT NULL,
-  trigger TEXT NOT NULL,                  -- schedule | manual
+  trigger TEXT NOT NULL,                  -- schedule | manual | note
   triggered_by TEXT,
   status TEXT NOT NULL,                   -- running | ok | error | cancelled
   started_at REAL NOT NULL, finished_at REAL,
-  summary TEXT
+  summary TEXT,
+  input TEXT                              -- what a person told the agent (note runs)
 );
 CREATE INDEX IF NOT EXISTS runs_agent ON runs(agent_id, started_at DESC);
 CREATE TABLE IF NOT EXISTS run_logs (
@@ -105,6 +106,9 @@ def connect(path: str | None = None) -> sqlite3.Connection:
     _conn.execute("PRAGMA journal_mode=WAL")
     _conn.execute("PRAGMA foreign_keys=ON")
     _conn.executescript(SCHEMA)
+    cols = {r[1] for r in _conn.execute("PRAGMA table_info(runs)")}
+    if "input" not in cols:  # added in 0.3.0
+        _conn.execute("ALTER TABLE runs ADD COLUMN input TEXT")
     # Runs left 'running' by a crash or restart never finish on their own.
     _conn.execute("UPDATE runs SET status='error', finished_at=?, summary='Interrupted (Agentry restarted)' "
                   "WHERE status='running'", (time.time(),))

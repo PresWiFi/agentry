@@ -82,92 +82,7 @@ $("#setup-form").addEventListener("submit", async ev => {
   try {
     await api("/api/setup", { method: "POST", body: formData(ev.target) });
     location.hash = "#/settings";
-    // ---------- settings & account ----------
-async function settingsPage() {
-  const s = await api("/api/settings");
-  const list = a => esc((a || []).join(", "));
-  view.innerHTML = `
-    <div class="head"><h1>Settings</h1></div>
-    <form id="gform" class="card"><h2>Address</h2><div class="formgrid">
-      <label>Public URL <input name="public_url" value="${esc(s.public_url)}" placeholder="${esc(location.origin)}"><small>The address people use, e.g. https://agentry.example.com. Used for the SSO redirect URI. Empty = whatever address the browser used.</small></label>
-      <label>Trusted reverse proxies <input name="trusted_proxies" value="${esc(s.trusted_proxies)}"><small>Comma-separated IPs or CIDRs whose X-Forwarded-For/Proto headers are trusted. Cookies are marked Secure automatically on HTTPS.</small></label>
-    </div><button class="btn primary">Save</button></form>
-
-    <form id="oform" class="card"><h2>Single sign-on (OpenID Connect)</h2>
-      <label>Redirect URI to register at your identity provider <div class="copy"><code id="ruri">${esc(s.redirect_uri)}</code><button type="button" class="btn" id="copy-ruri">Copy</button></div>
-        <small>Changes with the public URL above (save it first).</small></label>
-      <div class="formgrid">
-        <label style="grid-column:span 2">Issuer <input name="oidc_issuer" value="${esc(s.oidc_issuer)}" placeholder="https://login.microsoftonline.com/<tenant-id>/v2.0">
-          <small>Entra ID: https://login.microsoftonline.com/&lt;tenant-id&gt;/v2.0 · Authentik: https://auth.example.com/application/o/agentry/ · Keycloak: https://kc.example.com/realms/&lt;realm&gt; · Google: https://accounts.google.com</small></label>
-        <label>Client ID <input name="oidc_client_id" value="${esc(s.oidc_client_id)}" autocomplete="off"></label>
-        <label>Client secret <input name="oidc_client_secret" type="password" autocomplete="off" placeholder="${s.oidc_client_secret_set ? "set (leave blank to keep)" : ""}">
-          ${s.oidc_client_secret_set ? `<label class="check" style="margin-top:6px"><input type="checkbox" name="clear_oidc_client_secret"> Remove the stored secret</label>` : ""}</label>
-        <label>Button label <input name="oidc_label" value="${esc(s.oidc_label)}"></label>
-        <label>Scopes <input name="oidc_scopes" value="${esc(s.oidc_scopes)}"></label>
-      </div>
-      <h3>Roles</h3>
-      <p class="muted">Group names or IDs from the groups claim (Entra sends group object IDs). First match wins: admin, reviewer, viewer. With no groups listed, new SSO users get the default role and you set roles on the Users page.</p>
-      <div class="formgrid">
-        <label>Groups claim <input name="oidc_groups_claim" value="${esc(s.oidc_groups_claim)}"></label>
-        <label>Admin groups <input name="oidc_admin_groups" value="${list(s.oidc_admin_groups)}"><small>Comma-separated.</small></label>
-        <label>Reviewer groups <input name="oidc_reviewer_groups" value="${list(s.oidc_reviewer_groups)}"></label>
-        <label>Viewer groups <input name="oidc_viewer_groups" value="${list(s.oidc_viewer_groups)}"></label>
-        <label>Default role <select name="oidc_default_role">${["none", "viewer", "reviewer", "admin"].map(r => `<option ${r === s.oidc_default_role ? "selected" : ""}>${r}</option>`).join("")}</select><small>For users matching no group. "none" = no access.</small></label>
-        <label>Allowed email domains <input name="oidc_allowed_domains" value="${list(s.oidc_allowed_domains)}" placeholder="optional"><small>Comma-separated. Empty = any.</small></label>
-      </div>
-      <div class="row"><button class="btn primary">Save</button><button type="button" class="btn" id="test-oidc">Test issuer</button>
-        ${s.oidc_issuer && s.oidc_client_id ? `<a class="btn" href="/auth/oidc/login">Try signing in</a>` : ""}<span id="oidc-out" class="muted"></span></div>
-    </form>
-
-    <form id="lform" class="card"><h2>Password sign-in</h2>
-      <label class="check"><input type="checkbox" name="local_login" ${s.local_login ? "checked" : ""}> Allow local accounts to sign in with a password</label>
-      ${s.sso_admins ? "" : `<p class="note">To turn this off, first sign in once with SSO using an account that gets the admin role.</p>`}
-      <p class="muted">If SSO breaks while this is off: <code>docker exec -it agentry python -m agentry local-login on</code>, then restart the container.</p>
-      <button class="btn primary">Save</button></form>
-
-    <div class="card"><h2>Server</h2><dl class="kv">
-      <dt>Encryption key</dt><dd>${s.secret_source === "env" ? "From AGENTRY_SECRET_KEY" : `Generated, stored in ${esc(s.data_dir)}/secret.key`} <small class="muted">· back up the data volume; without the key, stored secrets can't be read.</small></dd>
-      <dt>Version</dt><dd id="ver"></dd></dl></div>`;
-  api("/api/me").then(m => $("#ver").textContent = m.version);
-  const save = (form, pick) => async ev => {
-    ev.preventDefault();
-    await act(() => api("/api/settings", { method: "PUT", body: pick(formData(form)) }), "Saved");
-    settingsPage();
-  };
-  $("#gform").onsubmit = save($("#gform"), d => d);
-  $("#oform").onsubmit = save($("#oform"), d => d);
-  $("#lform").onsubmit = save($("#lform"), d => d);
-  $("#copy-ruri").onclick = () => {
-    const t = $("#ruri").textContent;
-    (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(() => toast("Copied"), () => {
-      const r = document.createRange(); r.selectNodeContents($("#ruri")); getSelection().removeAllRanges(); getSelection().addRange(r);
-      toast("Selected; press Ctrl+C");
-    });
-  };
-  $("#test-oidc").onclick = async () => {
-    const out = $("#oidc-out");
-    out.textContent = "Checking…";
-    const r = await api("/api/settings/test-oidc", { method: "POST", body: { issuer: $("#oform").oidc_issuer.value } }).catch(e => ({ ok: false, error: e.message }));
-    out.innerHTML = r.ok ? `${pill("ok")} Found ${esc(r.issuer)}${r.claims_supported && !r.claims_supported.includes($("#oform").oidc_groups_claim.value) ? ` · note: “${esc($("#oform").oidc_groups_claim.value)}” isn't in the provider's advertised claims (may still be sent)` : ""}`
-      : `${pill("error")} ${esc(r.error)}`;
-  };
-}
-async function account() {
-  view.innerHTML = `<div class="head"><h1>Account</h1></div>
-    <div class="card"><dl class="kv"><dt>Name</dt><dd>${esc(ME.name || "")}</dd><dt>Email</dt><dd>${esc(ME.email || "—")}</dd>
-      <dt>Role</dt><dd>${esc(ME.role)}</dd><dt>Sign-in</dt><dd>${ME.local ? "Local password" : "SSO"}</dd></dl></div>
-    ${ME.local ? `<form id="pwform" class="card"><h2>Change password</h2><div class="formgrid">
-      <label>Current password <input name="current" type="password" required autocomplete="current-password"></label>
-      <label>New password <input name="new" type="password" required minlength="10" autocomplete="new-password"><small>At least 10 characters. Signs out your other sessions.</small></label>
-    </div><button class="btn primary">Change</button></form>` : ""}`;
-  $("#pwform")?.addEventListener("submit", async ev => {
-    ev.preventDefault();
-    await act(() => api("/api/me/password", { method: "POST", body: formData(ev.target) }), "Password changed");
-    ev.target.reset();
-  });
-}
-
-boot();
+    boot();
   } catch (e) { const el = $("#setup-error"); el.textContent = e.message; el.classList.remove("hidden"); }
 });
 async function showLogin(login, err) {
@@ -187,92 +102,7 @@ $("#login-form").addEventListener("submit", async ev => {
   ev.preventDefault();
   try {
     await api("/api/login", { method: "POST", body: formData(ev.target) });
-    // ---------- settings & account ----------
-async function settingsPage() {
-  const s = await api("/api/settings");
-  const list = a => esc((a || []).join(", "));
-  view.innerHTML = `
-    <div class="head"><h1>Settings</h1></div>
-    <form id="gform" class="card"><h2>Address</h2><div class="formgrid">
-      <label>Public URL <input name="public_url" value="${esc(s.public_url)}" placeholder="${esc(location.origin)}"><small>The address people use, e.g. https://agentry.example.com. Used for the SSO redirect URI. Empty = whatever address the browser used.</small></label>
-      <label>Trusted reverse proxies <input name="trusted_proxies" value="${esc(s.trusted_proxies)}"><small>Comma-separated IPs or CIDRs whose X-Forwarded-For/Proto headers are trusted. Cookies are marked Secure automatically on HTTPS.</small></label>
-    </div><button class="btn primary">Save</button></form>
-
-    <form id="oform" class="card"><h2>Single sign-on (OpenID Connect)</h2>
-      <label>Redirect URI to register at your identity provider <div class="copy"><code id="ruri">${esc(s.redirect_uri)}</code><button type="button" class="btn" id="copy-ruri">Copy</button></div>
-        <small>Changes with the public URL above (save it first).</small></label>
-      <div class="formgrid">
-        <label style="grid-column:span 2">Issuer <input name="oidc_issuer" value="${esc(s.oidc_issuer)}" placeholder="https://login.microsoftonline.com/<tenant-id>/v2.0">
-          <small>Entra ID: https://login.microsoftonline.com/&lt;tenant-id&gt;/v2.0 · Authentik: https://auth.example.com/application/o/agentry/ · Keycloak: https://kc.example.com/realms/&lt;realm&gt; · Google: https://accounts.google.com</small></label>
-        <label>Client ID <input name="oidc_client_id" value="${esc(s.oidc_client_id)}" autocomplete="off"></label>
-        <label>Client secret <input name="oidc_client_secret" type="password" autocomplete="off" placeholder="${s.oidc_client_secret_set ? "set (leave blank to keep)" : ""}">
-          ${s.oidc_client_secret_set ? `<label class="check" style="margin-top:6px"><input type="checkbox" name="clear_oidc_client_secret"> Remove the stored secret</label>` : ""}</label>
-        <label>Button label <input name="oidc_label" value="${esc(s.oidc_label)}"></label>
-        <label>Scopes <input name="oidc_scopes" value="${esc(s.oidc_scopes)}"></label>
-      </div>
-      <h3>Roles</h3>
-      <p class="muted">Group names or IDs from the groups claim (Entra sends group object IDs). First match wins: admin, reviewer, viewer. With no groups listed, new SSO users get the default role and you set roles on the Users page.</p>
-      <div class="formgrid">
-        <label>Groups claim <input name="oidc_groups_claim" value="${esc(s.oidc_groups_claim)}"></label>
-        <label>Admin groups <input name="oidc_admin_groups" value="${list(s.oidc_admin_groups)}"><small>Comma-separated.</small></label>
-        <label>Reviewer groups <input name="oidc_reviewer_groups" value="${list(s.oidc_reviewer_groups)}"></label>
-        <label>Viewer groups <input name="oidc_viewer_groups" value="${list(s.oidc_viewer_groups)}"></label>
-        <label>Default role <select name="oidc_default_role">${["none", "viewer", "reviewer", "admin"].map(r => `<option ${r === s.oidc_default_role ? "selected" : ""}>${r}</option>`).join("")}</select><small>For users matching no group. "none" = no access.</small></label>
-        <label>Allowed email domains <input name="oidc_allowed_domains" value="${list(s.oidc_allowed_domains)}" placeholder="optional"><small>Comma-separated. Empty = any.</small></label>
-      </div>
-      <div class="row"><button class="btn primary">Save</button><button type="button" class="btn" id="test-oidc">Test issuer</button>
-        ${s.oidc_issuer && s.oidc_client_id ? `<a class="btn" href="/auth/oidc/login">Try signing in</a>` : ""}<span id="oidc-out" class="muted"></span></div>
-    </form>
-
-    <form id="lform" class="card"><h2>Password sign-in</h2>
-      <label class="check"><input type="checkbox" name="local_login" ${s.local_login ? "checked" : ""}> Allow local accounts to sign in with a password</label>
-      ${s.sso_admins ? "" : `<p class="note">To turn this off, first sign in once with SSO using an account that gets the admin role.</p>`}
-      <p class="muted">If SSO breaks while this is off: <code>docker exec -it agentry python -m agentry local-login on</code>, then restart the container.</p>
-      <button class="btn primary">Save</button></form>
-
-    <div class="card"><h2>Server</h2><dl class="kv">
-      <dt>Encryption key</dt><dd>${s.secret_source === "env" ? "From AGENTRY_SECRET_KEY" : `Generated, stored in ${esc(s.data_dir)}/secret.key`} <small class="muted">· back up the data volume; without the key, stored secrets can't be read.</small></dd>
-      <dt>Version</dt><dd id="ver"></dd></dl></div>`;
-  api("/api/me").then(m => $("#ver").textContent = m.version);
-  const save = (form, pick) => async ev => {
-    ev.preventDefault();
-    await act(() => api("/api/settings", { method: "PUT", body: pick(formData(form)) }), "Saved");
-    settingsPage();
-  };
-  $("#gform").onsubmit = save($("#gform"), d => d);
-  $("#oform").onsubmit = save($("#oform"), d => d);
-  $("#lform").onsubmit = save($("#lform"), d => d);
-  $("#copy-ruri").onclick = () => {
-    const t = $("#ruri").textContent;
-    (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(() => toast("Copied"), () => {
-      const r = document.createRange(); r.selectNodeContents($("#ruri")); getSelection().removeAllRanges(); getSelection().addRange(r);
-      toast("Selected; press Ctrl+C");
-    });
-  };
-  $("#test-oidc").onclick = async () => {
-    const out = $("#oidc-out");
-    out.textContent = "Checking…";
-    const r = await api("/api/settings/test-oidc", { method: "POST", body: { issuer: $("#oform").oidc_issuer.value } }).catch(e => ({ ok: false, error: e.message }));
-    out.innerHTML = r.ok ? `${pill("ok")} Found ${esc(r.issuer)}${r.claims_supported && !r.claims_supported.includes($("#oform").oidc_groups_claim.value) ? ` · note: “${esc($("#oform").oidc_groups_claim.value)}” isn't in the provider's advertised claims (may still be sent)` : ""}`
-      : `${pill("error")} ${esc(r.error)}`;
-  };
-}
-async function account() {
-  view.innerHTML = `<div class="head"><h1>Account</h1></div>
-    <div class="card"><dl class="kv"><dt>Name</dt><dd>${esc(ME.name || "")}</dd><dt>Email</dt><dd>${esc(ME.email || "—")}</dd>
-      <dt>Role</dt><dd>${esc(ME.role)}</dd><dt>Sign-in</dt><dd>${ME.local ? "Local password" : "SSO"}</dd></dl></div>
-    ${ME.local ? `<form id="pwform" class="card"><h2>Change password</h2><div class="formgrid">
-      <label>Current password <input name="current" type="password" required autocomplete="current-password"></label>
-      <label>New password <input name="new" type="password" required minlength="10" autocomplete="new-password"><small>At least 10 characters. Signs out your other sessions.</small></label>
-    </div><button class="btn primary">Change</button></form>` : ""}`;
-  $("#pwform")?.addEventListener("submit", async ev => {
-    ev.preventDefault();
-    await act(() => api("/api/me/password", { method: "POST", body: formData(ev.target) }), "Password changed");
-    ev.target.reset();
-  });
-}
-
-boot();
+    boot();
   } catch (e) { const el = $("#login-error"); el.textContent = e.message; el.classList.remove("hidden"); }
 });
 $("#logout").onclick = async () => { await api("/api/logout", { method: "POST" }); location.hash = "#/"; showLogin(); };
@@ -321,11 +151,37 @@ async function refreshBadge() {
   } catch { }
 }
 
+// ---------- notes ("we changed X") ----------
+function noteBox(agents, types) {
+  const label = Object.fromEntries(types.map(t => [t.key, t]));
+  const ok = agents.filter(a => label[a.type]?.note_label);
+  if (!ok.length || !can("reviewer")) return "";
+  const t = label[ok[0].type];
+  return `<form class="card" id="note-form"><h2>${esc(t.note_label)}</h2>
+    ${ok.length > 1 ? `<label>Agent <select name="agent">${ok.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join("")}</select></label>`
+      : `<input type="hidden" name="agent" value="${ok[0].id}">`}
+    <textarea name="text" class="note" required maxlength="8000" placeholder="We updated …"></textarea>
+    <small class="muted">${esc(t.note_help)}</small>
+    <div class="row"><button class="btn primary">Send</button></div></form>`;
+}
+function wireNoteBox() {
+  $("#note-form")?.addEventListener("submit", async ev => {
+    ev.preventDefault();
+    const f = ev.target;
+    f.querySelector("button").disabled = true;
+    try {
+      const r = await api(`/api/agents/${f.agent.value}/note`, { method: "POST", body: { text: f.text.value } });
+      location.hash = `#/runs/${r.run_id}`;
+    } catch (e) { toast(e.message, true); f.querySelector("button").disabled = false; }
+  });
+}
+
 // ---------- dashboard ----------
 async function dashboard() {
-  const o = await api("/api/overview");
+  const [o, types] = await Promise.all([api("/api/overview"), api("/api/agent-types")]);
   view.innerHTML = `
     <div class="head"><h1>Dashboard</h1></div>
+    ${noteBox(o.agents, types)}
     <div class="grid">
       <a class="card" href="#/proposals"><div class="muted">Waiting for review</div><div class="stat">${o.pending}</div></a>
       <a class="card" href="#/agents"><div class="muted">Agents</div><div class="stat">${o.agents.length}</div>
@@ -341,6 +197,7 @@ async function dashboard() {
       : `<p class="muted">None yet. <a href="#/agents/new">Create one</a>.</p>`}</div>
     </div>
     <div class="card"><h2>Recent runs</h2>${runTable(o.runs, true)}</div>`;
+  wireNoteBox();
   for (const s of o.servers) {
     const el = document.createElement("div");
     el.innerHTML = `<b>${esc(s.name)}</b> <span class="muted">${esc(s.base_url)}</span> <span class="pill">checking…</span>`;
@@ -456,7 +313,9 @@ async function agentDetail(id) {
       <dt>Schedule</dt><dd>${a.enabled && a.schedule_minutes ? `every ${a.schedule_minutes} min · next ${a.next_run_at ? new Date(a.next_run_at * 1000).toLocaleString() : "—"}` : "manual only"}</dd>
       <dt>Model</dt><dd>${esc(a.config.model || "—")}${a.config.embed_model ? ` · embeddings ${esc(a.config.embed_model)}` : ""}</dd>
     </dl><div id="test-out"></div></div>
+    ${noteBox([a], types)}
     <div class="card"><h2>Runs</h2>${runTable(rs, false)}</div>`;
+  wireNoteBox();
   if (!can("admin")) return;
   $("#run").onclick = async () => {
     const r = await act(() => api(`/api/agents/${id}/run`, { method: "POST" }));
@@ -556,6 +415,11 @@ async function runs() {
   const rs = await api("/api/runs?limit=100");
   view.innerHTML = `<div class="head"><h1>Runs</h1></div><div class="card">${runTable(rs, true)}</div>`;
 }
+function runProposals(ps) {
+  if (!ps || !ps.length) return "";
+  return `<h3>Proposals</h3><table>${ps.map(p => `<tr class="click" onclick="location.hash='#/proposals/${p.id}'">
+    <td>${p.kind === "create" ? "New" : "Edit"}</td><td>${esc(p.title)}</td><td>${pill(p.status)}</td></tr>`).join("")}</table>`;
+}
 async function runDetail(id) {
   let last = 0;
   const r = await api(`/api/runs/${id}`);
@@ -563,7 +427,9 @@ async function runDetail(id) {
     <div class="head"><h1>Run #${r.id} · <a href="#/agents/${r.agent_id}">${esc(r.agent_name)}</a></h1><span id="rstatus">${pill(r.status)}</span>
       ${can("admin") ? `<button class="btn danger ${r.status === "running" ? "" : "hidden"}" id="stop">Stop</button>` : ""}</div>
     <div class="card"><dl class="kv"><dt>Started</dt><dd>${new Date(r.started_at * 1000).toLocaleString()} (${esc(r.trigger)}${r.triggered_by ? " by " + esc(r.triggered_by) : ""})</dd>
-      <dt>Took</dt><dd id="rdur">${dur(r.started_at, r.finished_at)}</dd><dt>Summary</dt><dd id="rsum">${esc(r.summary || "")}</dd></dl></div>
+      <dt>Took</dt><dd id="rdur">${dur(r.started_at, r.finished_at)}</dd><dt>Summary</dt><dd id="rsum">${esc(r.summary || "")}</dd>
+      ${r.input ? `<dt>Note</dt><dd class="note-text">${esc(r.input)}</dd>` : ""}</dl>
+      <div id="rprops">${runProposals(r.proposals)}</div></div>
     <div class="logs" id="logs"></div>`;
   const logs = $("#logs");
   const add = rows => {
@@ -587,6 +453,7 @@ async function runDetail(id) {
     if (n.status !== "running") {
       clearInterval(poll); poll = null;
       $("#rstatus").innerHTML = pill(n.status); $("#rsum").textContent = n.summary || "";
+      $("#rprops").innerHTML = runProposals(n.proposals);
       $("#stop")?.classList.add("hidden");
       refreshBadge();
     }
