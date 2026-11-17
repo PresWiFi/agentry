@@ -20,17 +20,16 @@ First agent: **ServiceDesk Plus Solutions**
 
 ## Run
 
-On any Docker host that can reach your GPU machine(s):
+On any Docker host that can reach your GPU machine(s), with only [docker-compose.yml](docker-compose.yml):
 
 ```bash
-# The image is private while the repo is: sign in once with a GitHub token that has read:packages
-echo <token> | docker login ghcr.io -u PresWiFi --password-stdin
-
-docker run -d --name agentry --restart unless-stopped -p 8090:8090 -v agentry-data:/data ghcr.io/preswifi/agentry:latest
-docker logs agentry 2>&1 | grep "setup code"
+gh release download -R PresWiFi/agentry -p docker-compose.yml   # or copy the file over
+docker login ghcr.io -u PresWiFi        # once; GitHub token with read:packages (image is private)
+docker compose up -d
+docker compose logs agentry | grep "setup code"
 ```
 
-Or with this repo checked out: `docker compose pull && docker compose up -d` (or `--build` to build locally).
+Host port: set `AGENTRY_HOST_PORT` (default 8090). Build from source instead: `docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build`.
 
 Open http://<host>:8090, enter the setup code, create the admin account. Then:
 1. **Settings** → public URL and SSO (optional).
@@ -100,12 +99,12 @@ Put Agentry behind a reverse proxy (Caddy, Nginx Proxy Manager, Traefik). In Set
 ## Update and back up
 
 ```bash
-docker pull ghcr.io/preswifi/agentry:latest && docker rm -f agentry && docker run -d ... (same command as above)
-# or: docker compose pull && docker compose up -d
+docker compose pull && docker compose up -d
 ```
 
-Everything (database, generated encryption key) lives in the `agentry-data` volume. Back it up:
-`docker run --rm -v agentry-data:/data -v "$PWD":/backup alpine tar czf /backup/agentry-data.tgz -C /data .`
+Everything (database, generated encryption key) is in the `agentry-data` volume:
+`docker run --rm -v agentry_agentry-data:/data -v "$PWD":/backup alpine tar czf /backup/agentry-data.tgz -C /data .`
+(Compose prefixes the volume with the project name, the folder name by default; check with `docker volume ls`.)
 
 Images: `:latest` follows main, `:X.Y.Z` for releases (tag `vX.Y.Z` matching `agentry/__init__.py`).
 

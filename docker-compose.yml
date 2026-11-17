@@ -1,18 +1,25 @@
-# Pull the published image:   docker compose pull && docker compose up -d
-# Or build from this checkout: docker compose up -d --build
+# Agentry: copy this file to the Docker host, then:
+#   docker login ghcr.io -u PresWiFi        (once; GitHub token with read:packages, while the image is private)
+#   docker compose up -d
+#   docker compose logs agentry | grep "setup code"
+# Open http://<host>:8090, create the admin, then add your GPU server(s) under Model servers.
+#
+# Update:  docker compose pull && docker compose up -d
+# Pin a version by replacing :latest with e.g. :0.2.0
+
 services:
   agentry:
     image: ghcr.io/preswifi/agentry:latest
-    build: .
     container_name: agentry
     restart: unless-stopped
-    env_file:
-      - path: .env
-        required: false
     ports:
-      - "8090:8090"
+      - "${AGENTRY_HOST_PORT:-8090}:8090"
     volumes:
-      - agentry-data:/data
+      - agentry-data:/data   # database + generated encryption key: back this up
+    # Optional. Everything else is configured in the web UI.
+    # environment:
+    #   AGENTRY_SECRET_KEY: ""        # keep the encryption key outside the volume
+    #   AGENTRY_ADMIN_PASSWORD: ""    # skip the setup page (first start only)
 
 volumes:
   agentry-data:
