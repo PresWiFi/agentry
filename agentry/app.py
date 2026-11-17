@@ -513,19 +513,34 @@ async def test_agent(aid: int, u=auth.need("admin")):
     except Exception as e:
         out["connection_error"] = str(e)
         cfg = json.loads(a["config"])
-    try:
-        llm = LLM.from_server(cfg.get("server"))
+    checks = [("model", cfg.get("server"), cfg.get("model"))]
+    if cfg.get("embed_model"):
+        checks.append(("embed_model", cfg.get("embed_server") or cfg.get("server"), cfg.get("embed_model")))
+    status: dict = {}
+    for key, sid, model in checks:
         try:
-            st = await llm.status()
-            names = {m["name"] for m in st["models"]}
-            out["server"] = {"ok": st["ok"], "error": st["error"]}
-            for k in ("model", "embed_model"):
-                if cfg.get(k):
-                    out[k] = cfg[k] in names or f"{cfg[k]}:latest" in names
-        finally:
-            await llm.close()
-    except Exception as e:
-        out["server"] = {"ok": False, "error": str(e)}
+            if sid not in status:
+                llm = LLM.from_server(sid)
+                try:
+                    status[sid] = (llm.kind, await llm.status())
+                finally:
+                    await llm.close()
+            kind, st = status[sid]
+        except Exception as e:
+            out[key] = {"ok": False, "detail": str(e)}
+            continue
+        if not st["ok"]:
+            out[key] = {"ok": False, "detail": f"server unreachable: {st['error']}"}
+            continue
+        names = [m["name"] for m in st["models"]]
+        if model in names or f"{model}:latest" in names:
+            out[key] = {"ok": True, "detail": "available"}
+        elif kind == "openai" and len(names) == 1:
+            # llama.cpp and similar serve one model and answer to any name.
+            out[key] = {"ok": True, "detail": f"server has one model ({names[0]}); requests go to it"}
+        else:
+            out[key] = {"ok": False, "detail": "not on the server" + (" (ollama pull it)" if kind == "ollama" else "")
+                        + (f"; it has: {', '.join(names[:8])}" if names else "")}
     return out
 
 

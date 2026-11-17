@@ -36,7 +36,20 @@ Start in Review mode with a small `Solutions per run`. Turn on the schedule once
 
 No `.env` is needed. Optional variables are in [.env.example](.env.example).
 
-GPU server setup and model picks for the Tesla T4: [docs/models.md](docs/models.md).
+## Model backends
+
+Agentry only talks to model servers over HTTP, so any machine on the network with a GPU can serve it. Add servers under **Model servers**; each agent picks a server for chat and (optionally) a separate one for embeddings.
+
+| Backend | Kind | URL | Notes |
+| --- | --- | --- | --- |
+| Ollama | Ollama | `http://host:11434` | Chat + embeddings in one server. Shows loaded models and VRAM. |
+| llama.cpp | OpenAI-compatible | `http://host:8080` | One model per process: run `llama-server -m chat.gguf -c 16384 --port 8080` and `llama-server -m embed.gguf --embeddings --port 8081`, add both, set the agent's **Embedding server** to the second. Model names are ignored. |
+| vLLM | OpenAI-compatible | `http://host:8000` | Use the served model name. `--api-key` → API key field. |
+| LM Studio | OpenAI-compatible | `http://host:1234` | Enable the local server and load the models first. |
+
+Embeddings are cached per server and model, so switching the embedding server re-embeds once.
+
+What to run on a Tesla T4: [docs/models.md](docs/models.md).
 
 ## SSO
 

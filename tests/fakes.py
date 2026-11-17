@@ -114,3 +114,30 @@ class FakeOllama:
         if request.url.path == "/api/ps":
             return httpx.Response(200, json={"models": []})
         return httpx.Response(404)
+
+
+class FakeLlamaCpp:
+    """llama-server: OpenAI-compatible, one model per process, ignores the requested model name."""
+
+    def __init__(self, alias: str, embeddings: bool):
+        self.alias, self.embeddings = alias, embeddings
+        self.inner = FakeOllama()
+        self.paths = []
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        self.paths.append(request.url.path)
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"object": "list", "data": [{"id": self.alias, "object": "model"}]})
+        body = json.loads(request.content or b"{}")
+        if request.url.path == "/v1/embeddings":
+            if not self.embeddings:
+                return httpx.Response(501, json={"error": {"message": "This server does not support embeddings. Start it with `--embeddings`"}})
+            return httpx.Response(200, json={"data": [{"index": i, "embedding": embed(t)} for i, t in enumerate(body["input"])]})
+        if request.url.path == "/v1/chat/completions":
+            if self.embeddings:
+                return httpx.Response(501, json={"error": {"message": "embedding-only server"}})
+            assert body["response_format"] == {"type": "json_object"}
+            r = self.inner.handler(httpx.Request("POST", "http://x/api/chat", json={"messages": body["messages"]}))
+            content = r.json()["message"]["content"]
+            return httpx.Response(200, json={"choices": [{"index": 0, "message": {"role": "assistant", "content": content}}]})
+        return httpx.Response(404)

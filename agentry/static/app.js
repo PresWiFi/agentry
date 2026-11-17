@@ -471,9 +471,8 @@ async function agentDetail(id) {
       const line = (ok, label, detail) => `<div>${ok ? pill("ok") : pill("error")} ${label} <span class="muted">${esc(detail || "")}</span></div>`;
       out.innerHTML = `<h3>Test</h3>` +
         (r.connection ? line(true, "ServiceDesk Plus", `${r.connection.solutions} solutions`) : line(false, "ServiceDesk Plus", r.connection_error)) +
-        line(r.server?.ok, "Model server", r.server?.error) +
-        ("model" in r ? line(r.model, "Chat model", r.model ? "installed" : "not found on the server (ollama pull it)") : "") +
-        ("embed_model" in r ? line(r.embed_model, "Embedding model", r.embed_model ? "installed" : "not found on the server") : "");
+        (r.model ? line(r.model.ok, "Chat model", r.model.detail) : "") +
+        (r.embed_model ? line(r.embed_model.ok, "Embedding model", r.embed_model.detail) : "");
     } catch (err) { out.innerHTML = `<p class="error">${esc(err.message)}</p>`; }
     e.target.disabled = false;
   };
@@ -493,12 +492,12 @@ async function agentForm(id) {
         case "bool": return `<label class="check"><input type="checkbox" name="${name}" ${v ? "checked" : ""}> ${esc(f.label)}</label>`;
         case "textarea": return `<label style="grid-column:1/-1">${esc(f.label)}<textarea name="${name}">${esc(v)}</textarea>${help}</label>`;
         case "select": return `<label>${esc(f.label)}<select name="${name}">${f.options.map(([k, l]) => `<option value="${esc(k)}" ${k === v ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>${help}</label>`;
-        case "server": return `<label>${esc(f.label)}<select name="${name}" data-server><option value="">—</option>${srv.map(s => `<option value="${s.id}" ${s.id === v ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select>${srv.length ? "" : `<small>Add one under <a href="#/servers">Model servers</a> first.</small>`}${help}</label>`;
+        case "server": return `<label>${esc(f.label)}<select name="${name}" data-server><option value="">${f.required ? "—" : "Same as model server"}</option>${srv.map(s => `<option value="${s.id}" ${s.id === v ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select>${srv.length ? "" : `<small>Add one under <a href="#/servers">Model servers</a> first.</small>`}${help}</label>`;
         case "connection": {
           const cs = conns.filter(c => c.kind === f.connection_kind);
           return `<label>${esc(f.label)}<select name="${name}"><option value="">—</option>${cs.map(c => `<option value="${c.id}" ${c.id === v ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>${cs.length ? "" : `<small>Add one under <a href="#/connections">Connections</a> first.</small>`}${help}</label>`;
         }
-        case "model": case "embed_model": return `<label>${esc(f.label)}<input name="${name}" value="${esc(v)}" list="models">${help}</label>`;
+        case "model": case "embed_model": return `<label>${esc(f.label)}<input name="${name}" value="${esc(v)}" list="${f.type === "embed_model" ? "embed-models" : "models"}">${help}</label>`;
         case "number": return `<label>${esc(f.label)}<input name="${name}" type="number" step="any" value="${esc(v)}">${help}</label>`;
         default: return `<label>${esc(f.label)}<input name="${name}" value="${esc(v)}">${help}</label>`;
       }
@@ -516,21 +515,24 @@ async function agentForm(id) {
           <label class="check" style="align-self:center"><input type="checkbox" name="enabled" ${a?.enabled ? "checked" : ""}> Schedule on</label>
         </div>
         ${sections.map(([title, fs]) => `<fieldset><legend>${esc(title)}</legend><div class="formgrid">${fs.map(fieldHtml).join("")}</div></fieldset>`).join("")}
-        <datalist id="models"></datalist>
+        <datalist id="models"></datalist><datalist id="embed-models"></datalist>
         <div class="row"><button class="btn primary">Save</button><a class="btn" href="${a ? `#/agents/${a.id}` : "#/agents"}">Cancel</a>
         ${a ? `<span style="flex:1"></span><button type="button" class="btn danger" id="del">Delete agent</button>` : ""}</div>
       </form>`;
     $("#atype").onchange = e => { type = e.target.value; render(); };
-    const loadModels = async () => {
-      const sid = $("[data-server]")?.value;
+    // Model name suggestions come from the server each model field uses.
+    const loadModels = async (sel, listId) => {
+      const sid = sel?.value || $("[name='cfg.server']")?.value;
       if (!sid) return;
       try {
         const st = await api(`/api/servers/${sid}/status`);
-        $("#models").innerHTML = st.models.map(m => `<option value="${esc(m.name)}">`).join("");
+        $("#" + listId).innerHTML = st.models.map(m => `<option value="${esc(m.name)}">`).join("");
       } catch { }
     };
-    $("[data-server]")?.addEventListener("change", loadModels);
-    loadModels();
+    const chatSel = $("[name='cfg.server']"), embSel = $("[name='cfg.embed_server']");
+    const refresh = () => { loadModels(chatSel, "models"); loadModels(embSel, "embed-models"); };
+    chatSel?.addEventListener("change", refresh); embSel?.addEventListener("change", refresh);
+    refresh();
     if (a) $("#del").onclick = async () => {
       if (!confirm(`Delete “${a.name}” with its runs and proposals?`)) return;
       await act(() => api(`/api/agents/${a.id}`, { method: "DELETE" }), "Deleted");

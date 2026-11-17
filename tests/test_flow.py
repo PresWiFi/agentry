@@ -82,7 +82,7 @@ def test_full_flow(env):
         "connection": cid, "server": sid, "model": "qwen3:14b", "embed_model": "nomic-embed-text",
         "find_gaps": True, "new_topic": "General"}}, headers=H).json()["id"]
     t = c.post(f"/api/agents/{aid}/test", headers=H).json()
-    assert t["model"] is True and t["embed_model"] is True and t["connection"]["solutions"] == 2
+    assert t["model"]["ok"] and t["embed_model"]["ok"] and t["connection"]["solutions"] == 2
 
     run = wait_run(c, c.post(f"/api/agents/{aid}/run", headers=H).json()["run_id"])
     assert run["status"] == "ok", run

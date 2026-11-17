@@ -94,6 +94,9 @@ class SDPSolutions(AgentType):
 
         {"key": "find_gaps", "label": "Draft solutions for recurring tickets", "type": "bool", "default": False,
          "section": "Gaps"},
+        {"key": "embed_server", "label": "Embedding server", "type": "server", "default": None,
+         "help": "Empty = the chat model server. llama.cpp serves one model per process, so point this at the "
+                 "llama-server started with --embeddings."},
         {"key": "embed_model", "label": "Embedding model", "type": "embed_model", "default": "",
          "help": "Needed for gap finding, e.g. nomic-embed-text or bge-m3."},
         {"key": "gap_lookback_days", "label": "Look at tickets from the last (days)", "type": "number", "default": 30,
@@ -119,6 +122,12 @@ class SDPSolutions(AgentType):
         if c["find_gaps"] and not c["new_topic"]:
             raise ValueError("Gap finding needs a topic for new solutions.")
         return c
+
+    @staticmethod
+    def _embed_key(c: dict) -> str:
+        # Cache vectors per server + model: llama.cpp ignores model names, so the name alone can't tell
+        # two different embedding models apart (and mixing them would silently break similarity).
+        return f"{c['embed_server'] or c['server']}:{c['embed_model']}"
 
     def _sdp(self, config: dict) -> SDP:
         cfg, secret = connection(config["connection"])
@@ -247,7 +256,7 @@ class SDPSolutions(AgentType):
     async def _embed_cached(self, ctx: RunContext, items: list[tuple[str, str, str]]) -> dict[str, list[float]]:
         """items: (cache key, content hash, text). Returns key -> vector."""
         c = ctx.config
-        model = c["embed_model"]
+        model = self._embed_key(c)
         out, todo = {}, []
         for key, h, text in items:
             row = db.one("SELECT hash, vector FROM embeddings WHERE key=? AND model=?", (key, model))
@@ -255,11 +264,11 @@ class SDPSolutions(AgentType):
                 out[key] = json.loads(row["vector"])
             else:
                 todo.append((key, h, text))
-        llm = ctx.llm(c["server"])
+        llm = ctx.llm(c["embed_server"] or c["server"])
         for i in range(0, len(todo), 16):
             ctx.check()
             chunk = todo[i:i + 16]
-            vecs = await llm.embed(model, [t[2] for t in chunk])
+            vecs = await llm.embed(c["embed_model"], [t[2] for t in chunk])
             for (key, h, _), v in zip(chunk, vecs):
                 db.ex("INSERT INTO embeddings(key, model, hash, vector) VALUES (?,?,?,?) ON CONFLICT(key, model) "
                       "DO UPDATE SET hash=excluded.hash, vector=excluded.vector", (key, model, h, json.dumps(v)))
@@ -275,7 +284,7 @@ class SDPSolutions(AgentType):
             sid = str(s["id"])
             upd = str(updated_ms(s) or "")
             key = f"c{conn_id}:sol:{sid}"
-            cached = db.one("SELECT hash FROM embeddings WHERE key=? AND model=?", (key, c["embed_model"]))
+            cached = db.one("SELECT hash FROM embeddings WHERE key=? AND model=?", (key, self._embed_key(c)))
             if cached and cached["hash"] == sha(upd):
                 sol_items.append((key, sha(upd), ""))
                 continue
@@ -304,7 +313,7 @@ class SDPSolutions(AgentType):
             ctx.check()
             rid = str(r["id"])
             key = f"c{conn_id}:req:{rid}"
-            if db.one("SELECT 1 FROM embeddings WHERE key=? AND model=?", (key, c["embed_model"])):
+            if db.one("SELECT 1 FROM embeddings WHERE key=? AND model=?", (key, self._embed_key(c))):
                 req_items.append((key, "closed", ""))
                 continue
             text = await self._request_text(sdp, rid, r)
