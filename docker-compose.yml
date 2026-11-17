@@ -1,0 +1,14 @@
+services:
+  agentry:
+    build: .
+    image: agentry:latest
+    container_name: agentry
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8090:8090"
+    volumes:
+      - agentry-data:/data
+
+volumes:
+  agentry-data:

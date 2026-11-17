@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agentry</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="login" class="login hidden">
+  <form id="login-form" class="card narrow">
+    <h1>Agentry</h1>
+    <p id="login-error" class="error hidden"></p>
+    <a id="sso-btn" class="btn primary block hidden" href="/auth/oidc/login">Sign in with SSO</a>
+    <div id="local-login" class="hidden">
+      <p id="or" class="muted center hidden">or</p>
+      <label>Username <input name="username" autocomplete="username" value="admin"></label>
+      <label>Password <input name="password" type="password" autocomplete="current-password"></label>
+      <button class="btn block">Sign in</button>
+    </div>
+    <p id="no-login" class="muted hidden">No sign-in method is configured. Set AGENTRY_ADMIN_PASSWORD or the OIDC_* variables.</p>
+  </form>
+</div>
+<div id="shell" class="hidden">
+  <nav>
+    <div class="brand">Agentry</div>
+    <a href="#/">Dashboard</a>
+    <a href="#/proposals">Proposals <span id="pending-badge" class="badge hidden"></span></a>
+    <a href="#/agents">Agents</a>
+    <a href="#/runs">Runs</a>
+    <a href="#/servers">Model servers</a>
+    <a href="#/connections" data-role="admin">Connections</a>
+    <a href="#/users" data-role="admin">Users</a>
+    <a href="#/audit" data-role="admin">Audit log</a>
+    <div class="spacer"></div>
+    <div class="me"><span id="me-name"></span><small id="me-role"></small><button id="logout" class="link">Sign out</button></div>
+  </nav>
+  <main id="view"></main>
+</div>
+<div id="toast" class="toast hidden"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
